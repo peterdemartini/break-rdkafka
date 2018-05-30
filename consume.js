@@ -11,7 +11,13 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
   }
   logger.info(`initializing...`)
   let processed = 0
+  let finishInterval = setInterval(() => {
+    if (shouldFinish()) {
+      consumerDone()
+    }
+  }, 500)
   const consumerDone = _.once((err) => {
+    clearInterval(finishInterval)
     ended = true
     logger.info(`offsets: ` + JSON.stringify(offsets, null, 2))
     if (consumer.isConnected()) {
@@ -101,9 +107,6 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
     })
     processed++
     processedMessage(m)
-    if (shouldFinish()) {
-      consumerDone()
-    }
   })
 
   consumer.on('disconnected', function (arg) {

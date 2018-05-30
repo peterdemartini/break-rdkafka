@@ -32,16 +32,20 @@ function run () {
     const processed = []
     const sent = []
     const children = {}
-    const consumersDone = _.after(numConsumers, () => {
-      signale.success(`processed ${_.size(processed)}`)
-      console.dir(finalOffsets)
-      process.exit(0)
-    })
-    const producersDone = _.after(numProducers, () => {
-      _.forEach(_.values(children), (child) => {
-        child.send({ fn: 'shouldFinish' })
-      })
-    })
+    const finish = () => {
+      if (_.isEmpty(children)) {
+        signale.success(`Maybe done?`)
+        console.dir(finalOffsets)
+        process.exit(0)
+      }
+      if (_.isEmpty(messages)) {
+        killAll(() => {
+          signale.success(`DONE!`)
+          console.dir(finalOffsets)
+          process.exit(0)
+        })
+      }
+    }
     const sentMessage = ({ key }) => {
       const exists = _.find(sent, key)
       if (exists) {
@@ -52,15 +56,18 @@ function run () {
         signale.warn(`sent more messages than it should have`)
       }
     }
-    const killAll = () => {
-      signale.warn('Killing all children')
+    const killAll = (callback) => {
+      if (_.isEmpty(children)) {
+        callback()
+        return
+      }
+      signale.warn('Killing all remaining children')
       _.forEach(_.values(children), (child) => {
         child.kill('SIGTERM')
       })
       setTimeout(() => {
-        signale.warn('Timeout Exiting...')
-        process.exit(0)
-      }, 30 * 1000)
+        callback()
+      }, 5 * 1000)
     }
     const processedMessage = ({ key }) => {
       const exists = _.find(processed, key)
@@ -70,6 +77,10 @@ function run () {
       processed.push(key)
       if (_.size(processed) === totalMessages) {
         signale.info(`processed all of the messages`)
+        _.forEach(children, (child, key) => {
+          signale.info(`sending shouldFinish to ${key}`)
+          child.send({ fn: 'shouldFinish' })
+        })
       }
       if (_.size(processed) > totalMessages) {
         signale.warn(`processed more messages than it should have`)
@@ -89,8 +100,8 @@ function run () {
       })
       child.on('close', (code) => {
         delete children[key]
+        finish()
         signale.timeEnd(key)
-        producersDone()
         if (err) {
           signale.error(err)
           killAll()
@@ -127,8 +138,8 @@ function run () {
       })
       child.on('close', (code) => {
         delete children[key]
+        finish()
         signale.timeEnd(key)
-        consumersDone()
         if (err) {
           signale.error(err)
           killAll()
