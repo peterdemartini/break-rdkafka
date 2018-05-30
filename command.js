@@ -2,12 +2,12 @@ const _ = require('lodash')
 const { kafka } = require('kafka-tools')
 const uuidv4 = require('uuid/v4')
 const signale = require('signale')
-const consume = require('./consume')
-const produce = require('./produce')
+const { fork } = require('child_process')
 
 function run () {
   const topicName = uuidv4()
   const numPartitions = 9
+  const messagesPerPartition = 100000
   const kafkaBrokers = 'localhost:9092'
   const client = new kafka.Client('localhost:2181', _.uniqueId('break-kafka-'), {
     sessionTimeout: 5000,
@@ -19,13 +19,19 @@ function run () {
       signale.fatal(err)
       return
     }
-    const totalMessages = 1000000
-    const numProducers = 1
+    const messages = _.times(messagesPerPartition, () => {
+      return _.times(numPartitions, (partition) => ({
+        partition,
+        key: uuidv4()
+      }))
+    })
+    const totalMessages = _.size(messages)
+    const numProducers = 4
     const numConsumers = Math.round(numPartitions / 3)
     const finalOffsets = {}
     const processed = []
     const sent = []
-    const timeSpacing = 2000
+    const children = {}
     const exitAfter = _.after(numConsumers, () => {
       signale.success(`processed ${_.size(processed)}`)
       console.dir(finalOffsets)
@@ -41,18 +47,15 @@ function run () {
         signale.warn(`sent more messages than it should have`)
       }
     }
-    const getMessageBatch = () => {
-      const remaining = totalMessages - _.size(sent)
-      const value = Buffer.from(_.uniqueId('value-'))
-      const key = _.uniqueId('key-')
-      const count = (remaining >= numPartitions) ? numPartitions : remaining
-      return _.times(count, (partition) => {
-        return {
-          partition,
-          value,
-          key
-        }
+    const killAll = () => {
+      signale.warn('Killing all children')
+      _.forEach(_.values(children), (child) => {
+        child.kill('SIGTERM')
       })
+      setTimeout(() => {
+        signale.warn('Timeout Exiting...')
+        process.exit(0)
+      }, 30 * 1000)
     }
     const processedMessage = ({ key }) => {
       const exists = _.find(processed, key)
@@ -61,57 +64,83 @@ function run () {
       }
       processed.push(key)
       if (_.size(processed) === totalMessages) {
-        return true
+        _.forEach(_.values(children), (child) => {
+          child.send({ fn: 'shouldFinish' })
+        })
       }
       if (_.size(processed) > totalMessages) {
         signale.warn(`processed more messages than it should have`)
       }
-      return false
     }
-    const setupProducer = _.after(numConsumers, () => {
-      _.times(numProducers, (i) => {
-        setTimeout(() => {
-          const key = `produce-${i}`
-          signale.time(key)
-          produce({
-            key,
-            topicName,
-            numPartitions,
-            getMessageBatch,
-            sentMessage,
-            kafkaBrokers
-          }, (err) => {
-            signale.timeEnd(key)
-            if (err) {
-              signale.error(err)
-              process.exit(1)
-            }
-            signale.success(`${key} done!`)
-          })
-        }, (i + 1) * timeSpacing)
+    _.times(numProducers, (i) => {
+      const key = `produce-${i}`
+      signale.time(key)
+      const child = fork(`${__dirname}/produce-worker.js`, [], {
+        env: {
+          BREAK_KAFKA_KEY: key,
+          BREAK_KAFKA_TOPIC_NAME: topicName,
+          BREAK_KAFKA_BROKERS: kafkaBrokers,
+          FORCE_COLOR: '1'
+        },
+        stdio: 'inherit'
       })
+      child.on('close', (code) => {
+        signale.timeEnd(key)
+        if (err) {
+          signale.error(err)
+          killAll()
+        }
+        signale.success(`${key} done!`)
+      })
+      child.on('error', (err) => {
+        signale.error(err)
+      })
+      child.on('message', (data) => {
+        if (data.fn === 'sentMessage') {
+          sentMessage(data.msg)
+        }
+        if (data.fn === 'getMessageBatch') {
+          const batch = messages.splice(0, 100)
+          const responseId = data.requestId
+          child.send({ fn: 'recieveMessageBatch', messages: batch, responseId })
+        }
+      })
+      children[key] = child
     })
     _.times(numConsumers, (i) => {
-      setTimeout(() => {
-        const key = `consume-${i + 1}`
-        signale.time(key)
-        consume({
-          key,
-          topicName,
-          processedMessage,
-          kafkaBrokers
-        }, (err, offsets) => {
-          _.set(finalOffsets, key, offsets)
-          signale.timeEnd(key)
-          if (err) {
-            signale.error(err)
-            process.exit(1)
-          }
-          signale.success(`${key} done!`)
-          exitAfter()
-        })
-        setupProducer()
-      }, i * timeSpacing)
+      const key = `consume-${i + 1}`
+      signale.time(key)
+      const child = fork(`${__dirname}/consume-worker.js`, [], {
+        env: {
+          BREAK_KAFKA_KEY: key,
+          BREAK_KAFKA_TOPIC_NAME: topicName,
+          BREAK_KAFKA_BROKERS: kafkaBrokers,
+          FORCE_COLOR: '1'
+        },
+        stdio: 'inherit'
+      })
+      child.on('close', (code) => {
+        signale.timeEnd(key)
+        if (err) {
+          signale.error(err)
+          killAll()
+          return
+        }
+        signale.success(`${key} done!`)
+        exitAfter()
+      })
+      child.on('error', (err) => {
+        signale.error(err)
+      })
+      child.on('message', (data) => {
+        if (data.fn === 'processedMessage') {
+          processedMessage(data.msg)
+        }
+        if (data.fn === 'updateOffsets') {
+          finalOffsets[key] = data.offsets
+        }
+      })
+      children[key] = child
     })
     signale.info(`initializing...
       topic: ${topicName}

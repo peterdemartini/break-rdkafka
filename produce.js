@@ -1,16 +1,12 @@
 const Kafka = require('node-rdkafka')
 const _ = require('lodash')
+const uuidv4 = require('uuid/v4')
 const signale = require('signale')
 
-function produce ({ key, topicName, numPartitions, sentMessage, getMessageBatch, kafkaBrokers }, callback) {
+function produce ({ key, topicName, sentMessage, startBatch, kafkaBrokers }, callback) {
   const logger = signale.scope(key)
   if (!topicName) {
     logger.error(`requires a topicName`)
-    process.exit(1)
-  }
-
-  if (!numPartitions) {
-    logger.error(`requires a numPartitions`)
     process.exit(1)
   }
 
@@ -52,28 +48,34 @@ function produce ({ key, topicName, numPartitions, sentMessage, getMessageBatch,
   // Wait for the ready event before producing
   producer.on('ready', function (arg) {
     logger.info(`ready!`)
-    const send = () => {
-      const batch = getMessageBatch()
-      if (_.isEmpty(batch)) {
-        producerDone()
-        return
-      }
-      const sendAfter = _.after(_.size(batch), () => {
-        process.nextTick(() => { send() })
-      })
-      _.forEach(batch, (message) => {
-        if (ended) {
+    const sendMessages = () => {
+      startBatch((err, messages) => {
+        if (err) {
+          producerDone(err)
           return
         }
-        const result = producer.produce(topicName, message.partition, message.value, message.key)
-        if (result !== true) {
-          logger.warn(`produce did not return true, got ${result}`)
+        if (_.isEmpty(messages)) {
+          producerDone()
+          return
         }
-        sentMessage(message)
-        sendAfter()
+        const sendAfter = _.after(_.size(messages), () => {
+          sendMessages()
+        })
+        _.forEach(messages, (message) => {
+          if (ended) {
+            return
+          }
+          const value = Buffer.from(uuidv4())
+          const result = producer.produce(topicName, message.partition, value, message.key)
+          if (result !== true) {
+            logger.warn(`produce did not return true, got ${result}`)
+          }
+          sentMessage(message)
+          sendAfter()
+        })
       })
     }
-    send()
+    sendMessages()
   })
 
   producer.on('disconnected', function (arg) {

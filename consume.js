@@ -2,7 +2,7 @@ const Kafka = require('node-rdkafka')
 const _ = require('lodash')
 const signale = require('signale')
 
-function consume ({ key, topicName, processedMessage, kafkaBrokers }, callback) {
+function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessage, kafkaBrokers }, callback) {
   const logger = signale.scope(key)
 
   if (!topicName) {
@@ -18,11 +18,11 @@ function consume ({ key, topicName, processedMessage, kafkaBrokers }, callback) 
       consumer.disconnect()
     }
     if (err) {
-      callback(err, offsets)
+      callback(err)
       return
     }
     logger.success(`processed ${processed}`)
-    callback(null, offsets)
+    callback(null)
   })
   let assignments = []
   const consumer = new Kafka.KafkaConsumer({
@@ -83,6 +83,7 @@ function consume ({ key, topicName, processedMessage, kafkaBrokers }, callback) 
     // committing offsets every numMessages
     if (offsets[partition] % (numMessages + 1) === numMessages) {
       logger.pending(`processed ${processed}`)
+      updateOffsets(offsets)
       consumer.commit(m)
     }
     _.forEach(assignments, (par) => {
@@ -91,7 +92,7 @@ function consume ({ key, topicName, processedMessage, kafkaBrokers }, callback) 
       }
       const offset = _.get(offsets, par, 0)
       if (offset < 0) return
-      const range = 1000
+      const range = 10000
       const upper = offset + range
       const lower = offset - range
       if (!_.inRange(offsets[partition], lower, upper)) {
@@ -99,7 +100,8 @@ function consume ({ key, topicName, processedMessage, kafkaBrokers }, callback) 
       }
     })
     processed++
-    if (processedMessage(m)) {
+    processedMessage(m)
+    if (shouldFinish()) {
       consumerDone()
     }
   })
