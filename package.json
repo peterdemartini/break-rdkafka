@@ -1,0 +1,19 @@
+{
+  "name": "break-rdkafka",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+      "start": "node command.js"
+  },
+  "devDependencies": {
+    "standard": "^11.0.1"
+  },
+  "dependencies": {
+    "kafka-tools": "^1.1.0",
+    "lodash": "^4.17.10",
+    "node-rdkafka": "^2.3.3",
+    "signale": "^1.1.0",
+    "uuid": "^3.2.1"
+  }
+}
