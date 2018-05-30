@@ -32,10 +32,15 @@ function run () {
     const processed = []
     const sent = []
     const children = {}
-    const exitAfter = _.after(numConsumers, () => {
+    const consumersDone = _.after(numConsumers, () => {
       signale.success(`processed ${_.size(processed)}`)
       console.dir(finalOffsets)
       process.exit(0)
+    })
+    const producersDone = _.after(numProducers, () => {
+      _.forEach(_.values(children), (child) => {
+        child.send({ fn: 'shouldFinish' })
+      })
     })
     const sentMessage = ({ key }) => {
       const exists = _.find(sent, key)
@@ -64,9 +69,7 @@ function run () {
       }
       processed.push(key)
       if (_.size(processed) === totalMessages) {
-        _.forEach(_.values(children), (child) => {
-          child.send({ fn: 'shouldFinish' })
-        })
+        signale.info(`processed all of the messages`)
       }
       if (_.size(processed) > totalMessages) {
         signale.warn(`processed more messages than it should have`)
@@ -85,10 +88,13 @@ function run () {
         stdio: 'inherit'
       })
       child.on('close', (code) => {
+        delete children[key]
         signale.timeEnd(key)
+        producersDone()
         if (err) {
           signale.error(err)
           killAll()
+          return
         }
         signale.success(`${key} done!`)
       })
@@ -120,14 +126,15 @@ function run () {
         stdio: 'inherit'
       })
       child.on('close', (code) => {
+        delete children[key]
         signale.timeEnd(key)
+        consumersDone()
         if (err) {
           signale.error(err)
           killAll()
           return
         }
         signale.success(`${key} done!`)
-        exitAfter()
       })
       child.on('error', (err) => {
         signale.error(err)
