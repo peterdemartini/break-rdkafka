@@ -1,7 +1,10 @@
 const Kafka = require('node-rdkafka')
 const _ = require('lodash')
+const signale = require('signale')
 
-function consume ({ logger, topicName, shouldFinish, kafkaBrokers }, callback) {
+function consume ({ key, topicName, processedMessage, kafkaBrokers }, callback) {
+  const logger = signale.scope(key)
+
   if (!topicName) {
     logger.error(`requires a topicName`)
     process.exit(1)
@@ -60,7 +63,7 @@ function consume ({ logger, topicName, shouldFinish, kafkaBrokers }, callback) {
     consumerDone(err)
   })
 
-  const numMessages = 1000
+  const numMessages = 10000
 
   consumer.on('ready', function (arg) {
     logger.info(`ready!`)
@@ -96,7 +99,7 @@ function consume ({ logger, topicName, shouldFinish, kafkaBrokers }, callback) {
       }
     })
     processed++
-    if (shouldFinish()) {
+    if (processedMessage(m)) {
       consumerDone()
     }
   })

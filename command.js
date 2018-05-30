@@ -7,7 +7,7 @@ const produce = require('./produce')
 
 function run () {
   const topicName = uuidv4()
-  const numPartitions = 10
+  const numPartitions = 9
   const kafkaBrokers = 'localhost:9092'
   const client = new kafka.Client('localhost:2181', _.uniqueId('break-kafka-'), {
     sessionTimeout: 5000,
@@ -21,22 +21,50 @@ function run () {
     }
     const totalMessages = 1000000
     const numProducers = 1
-    const numConsumers = _.ceil(numPartitions / 4)
+    const numConsumers = Math.round(numPartitions / 3)
     const finalOffsets = {}
-    let totalProcessed = 0
+    const processed = []
+    const sent = []
     const timeSpacing = 2000
     const exitAfter = _.after(numConsumers, () => {
-      signale.success(`processed ${totalProcessed}`)
+      signale.success(`processed ${_.size(processed)}`)
       console.dir(finalOffsets)
       process.exit(0)
     })
-    const shouldFinish = () => {
-      ++totalProcessed
-      if (totalProcessed === totalMessages) {
+    const sentMessage = ({ key }) => {
+      const exists = _.find(sent, key)
+      if (exists) {
+        signale.warn(`sent ${key} more than once`)
+      }
+      sent.push(key)
+      if (_.size(sent) > totalMessages) {
+        signale.warn(`sent more messages than it should have`)
+      }
+    }
+    const getMessageBatch = () => {
+      const remaining = totalMessages - _.size(sent)
+      const value = Buffer.from(_.uniqueId('value-'))
+      const key = _.uniqueId('key-')
+      const count = (remaining >= numPartitions) ? numPartitions : remaining
+      return _.times(count, (partition) => {
+        return {
+          partition,
+          value,
+          key
+        }
+      })
+    }
+    const processedMessage = ({ key }) => {
+      const exists = _.find(processed, key)
+      if (exists) {
+        signale.warn(`processed ${key} more than once`)
+      }
+      processed.push(key)
+      if (_.size(processed) === totalMessages) {
         return true
       }
-      if (totalProcessed > totalMessages) {
-        signale.error('processed more messages than produced')
+      if (_.size(processed) > totalMessages) {
+        signale.warn(`processed more messages than it should have`)
       }
       return false
     }
@@ -44,13 +72,13 @@ function run () {
       _.times(numProducers, (i) => {
         setTimeout(() => {
           const key = `produce-${i}`
-          const maxMessages = totalMessages / numProducers
           signale.time(key)
           produce({
-            logger: signale.scope(key),
+            key,
             topicName,
             numPartitions,
-            maxMessages,
+            getMessageBatch,
+            sentMessage,
             kafkaBrokers
           }, (err) => {
             signale.timeEnd(key)
@@ -68,9 +96,9 @@ function run () {
         const key = `consume-${i + 1}`
         signale.time(key)
         consume({
-          logger: signale.scope(key),
+          key,
           topicName,
-          shouldFinish,
+          processedMessage,
           kafkaBrokers
         }, (err, offsets) => {
           _.set(finalOffsets, key, offsets)
