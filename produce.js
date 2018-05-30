@@ -1,24 +1,41 @@
 const Kafka = require('node-rdkafka')
 const _ = require('lodash')
-const signale = require('signale')
 
-function produce ({ id, topicName, numPartitions, maxMessages, kafkaBrokers }) {
+function produce ({ logger, topicName, numPartitions, maxMessages, kafkaBrokers }, callback) {
   if (!topicName) {
-    signale.error(`[${id}] requires a topicName`)
+    logger.error(`requires a topicName`)
     process.exit(1)
   }
 
   if (!numPartitions) {
-    signale.error(`[${id}] requires a numPartitions`)
+    logger.error(`requires a numPartitions`)
     process.exit(1)
   }
 
   if (!maxMessages) {
-    signale.error(`[${id}] requires a maxMessages`)
+    logger.error(`requires a maxMessages`)
     process.exit(1)
   }
+  logger.info(`initializing...`)
+
+  let pollLoop
+  let ended = false
+  const producerDone = _.once((err) => {
+    ended = true
+    clearInterval(pollLoop)
+    if (producer.isConnected()) {
+      producer.disconnect()
+    }
+    if (err) {
+      callback(err)
+      return
+    }
+    logger.success(`DONE! ${maxMessages}`)
+    callback()
+  })
 
   const producer = new Kafka.Producer({
+    'client.id': _.uniqueId('break-kafka-'),
     // 'debug' : 'all',
     'metadata.broker.list': kafkaBrokers,
     'dr_cb': true // delivery report callback
@@ -26,28 +43,19 @@ function produce ({ id, topicName, numPartitions, maxMessages, kafkaBrokers }) {
 
   // logging debug messages, if debug is enabled
   producer.on('event.log', function (log) {
-    signale.log(`[${id}] ${log}`)
+    logger.log(`${log}`)
   })
 
   // logging all errors
   producer.on('event.error', function (err) {
-    signale.error(`[${id}] Error from producer ${err}`)
+    producerDone(err)
   })
 
-  let pollLoop
-  let ended = false
-  const endAfter = _.after(maxMessages, () => {
-    signale.success(`[${id}] Done processing ${maxMessages}`)
-    ended = true
-    signale.timeEnd(`[${id}]`)
-    clearInterval(pollLoop)
-    producer.disconnect()
-    process.exit(1)
-  })
+  const endAfter = _.after(maxMessages, producerDone)
 
   producer.on('delivery-report', function (err, report) {
     if (err) {
-      signale.error(`[${id}] devilery report error ${err.toString()}`)
+      producerDone(err)
       return
     }
     endAfter()
@@ -55,8 +63,7 @@ function produce ({ id, topicName, numPartitions, maxMessages, kafkaBrokers }) {
 
   // Wait for the ready event before producing
   producer.on('ready', function (arg) {
-    signale.time(`[${id}]`)
-    signale.info(`[${id}] Starting... topic: ${topicName} maxMessages: ${maxMessages}`)
+    logger.info(`ready!`)
     _.times(maxMessages / numPartitions, (i) => {
       setTimeout(() => {
         _.times(numPartitions, (p) => {
@@ -76,7 +83,7 @@ function produce ({ id, topicName, numPartitions, maxMessages, kafkaBrokers }) {
   })
 
   producer.on('disconnected', function (arg) {
-    signale.log(`[${id}] disconnected ${JSON.stringify(arg)}`)
+    producerDone(new Error('Producer Disconnected'))
   })
 
   // starting the producer
