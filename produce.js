@@ -27,7 +27,7 @@ function produce ({ key, topicName, sentMessage, startBatch, kafkaBrokers }, cal
 
   const producer = new Kafka.Producer({
     'client.id': _.uniqueId('break-kafka-'),
-    // 'debug' : 'all',
+    'debug': 'broker,topic',
     'queue.buffering.max.messages': 500000,
     'queue.buffering.max.ms': 1000,
     'batch.num.messages': 100000,
@@ -36,7 +36,8 @@ function produce ({ key, topicName, sentMessage, startBatch, kafkaBrokers }, cal
 
   // logging debug messages, if debug is enabled
   producer.on('event.log', function (log) {
-    logger.log(`${log}`)
+    if (log.fac === 'HEARTBEAT') return
+    logger.debug(log.fac, log.message)
   })
   producer.setPollInterval(100)
 

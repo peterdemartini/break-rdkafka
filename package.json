@@ -4,7 +4,7 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "start": "env UV_THREADPOOL_SIZE=20 node command.js"
+    "start": "node command.js"
   },
   "devDependencies": {
     "standard": "^11.0.1"

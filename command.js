@@ -6,9 +6,9 @@ const { fork } = require('child_process')
 
 function run () {
   const topicName = uuidv4()
-  const numPartitions = 9
-  const messagesPerPartition = 100000
-  const kafkaBrokers = 'localhost:9092'
+  const numPartitions = 10
+  const messagesPerPartition = 200000
+  const kafkaBrokers = 'localhost:9092,localhost:9093'
   const client = new kafka.Client('localhost:2181', _.uniqueId('break-kafka-'), {
     sessionTimeout: 5000,
     spinDelay: 500,
@@ -26,24 +26,24 @@ function run () {
       }))
     })
     const totalMessages = _.size(messages)
-    const numProducers = 4
-    const numConsumers = Math.round(numPartitions / 3)
+    const numProducers = 2
+    const numConsumers = 5
     const finalOffsets = {}
     const processed = []
     const sent = []
     const children = {}
     const finish = () => {
-      if (_.isEmpty(children)) {
-        signale.success(`Maybe done?`)
-        console.dir(finalOffsets)
-        process.exit(0)
-      }
       if (_.isEmpty(messages)) {
         killAll(() => {
           signale.success(`DONE!`)
           console.dir(finalOffsets)
           process.exit(0)
         })
+      }
+      if (_.isEmpty(children)) {
+        signale.success(`Maybe done?`)
+        console.dir(finalOffsets)
+        process.exit(0)
       }
     }
     const sentMessage = ({ key }) => {

@@ -33,6 +33,7 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
   let assignments = []
   const consumer = new Kafka.KafkaConsumer({
     'client.id': _.uniqueId('break-kafka-'),
+    'debug': 'cgrp,topic',
     'metadata.broker.list': kafkaBrokers,
     'group.id': topicName + '-group',
     'enable.auto.commit': false,
@@ -61,7 +62,9 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
 
   // logging debug messages, if debug is enabled
   consumer.on('event.log', function (log) {
-    logger.log(`${log}`)
+    if (log.fac === 'HEARTBEAT') return
+    if (log.fac === 'COMMIT') return
+    logger.debug(log.fac, log.message)
   })
 
   // logging all errors
