@@ -7,7 +7,16 @@ const { fork } = require('child_process')
 function run () {
   const topicName = uuidv4()
   const numPartitions = 10
-  const messagesPerPartition = 200000
+  const numProducers = 2
+  const numConsumers = 5
+  const messagesPerPartition = 100000
+  const messages = _.times(messagesPerPartition, () => {
+    return _.times(numPartitions, (partition) => ({
+      partition,
+      key: uuidv4()
+    }))
+  })
+  const totalMessages = _.size(messages)
   const kafkaBrokers = 'localhost:9092,localhost:9093'
   const client = new kafka.Client('localhost:2181', _.uniqueId('break-kafka-'), {
     sessionTimeout: 5000,
@@ -19,42 +28,26 @@ function run () {
       signale.fatal(err)
       return
     }
-    const messages = _.times(messagesPerPartition, () => {
-      return _.times(numPartitions, (partition) => ({
-        partition,
-        key: uuidv4()
-      }))
-    })
-    const totalMessages = _.size(messages)
-    const numProducers = 2
-    const numConsumers = 5
     const finalOffsets = {}
     const processed = []
     const sent = []
     const children = {}
-    const finish = () => {
-      if (_.isEmpty(messages)) {
-        killAll(() => {
+    const exitNow = (err) => {
+      signale.info('Exiting now...')
+      killAll(() => {
+        client.zk.deleteTopics([topicName], (dErr) => {
+          if (dErr) {
+            signale.error(dErr)
+          }
+          if (err) {
+            signale.fatal(err)
+            process.exit(1)
+          }
           signale.success(`DONE!`)
           console.dir(finalOffsets)
           process.exit(0)
         })
-      }
-      if (_.isEmpty(children)) {
-        signale.success(`Maybe done?`)
-        console.dir(finalOffsets)
-        process.exit(0)
-      }
-    }
-    const sentMessage = ({ key }) => {
-      const exists = _.find(sent, key)
-      if (exists) {
-        signale.warn(`sent ${key} more than once`)
-      }
-      sent.push(key)
-      if (_.size(sent) > totalMessages) {
-        signale.warn(`sent more messages than it should have`)
-      }
+      })
     }
     const killAll = (callback) => {
       if (_.isEmpty(children)) {
@@ -68,6 +61,24 @@ function run () {
       setTimeout(() => {
         callback()
       }, 5 * 1000)
+    }
+    const exitIfNeeded = () => {
+      if (_.isEmpty(messages)) {
+        exitNow()
+      }
+      if (_.isEmpty(children)) {
+        exitNow()
+      }
+    }
+    const sentMessage = ({ key }) => {
+      const exists = _.find(sent, key)
+      if (exists) {
+        signale.warn(`sent ${key} more than once`)
+      }
+      sent.push(key)
+      if (_.size(sent) > totalMessages) {
+        signale.warn(`sent more messages than it should have`)
+      }
     }
     const processedMessage = ({ key }) => {
       const exists = _.find(processed, key)
@@ -100,13 +111,12 @@ function run () {
       })
       child.on('close', (code) => {
         delete children[key]
-        finish()
-        signale.timeEnd(key)
         if (err) {
-          signale.error(err)
-          killAll()
+          exitNow(new Error(`${key} died with an exit code of ${code}`))
           return
         }
+        exitIfNeeded()
+        signale.timeEnd(key)
         signale.success(`${key} done!`)
       })
       child.on('error', (err) => {
@@ -117,7 +127,7 @@ function run () {
           sentMessage(data.msg)
         }
         if (data.fn === 'getMessageBatch') {
-          const batch = messages.splice(0, 100)
+          const batch = messages.splice(0, 1000)
           const responseId = data.requestId
           child.send({ fn: 'recieveMessageBatch', messages: batch, responseId })
         }
@@ -138,13 +148,12 @@ function run () {
       })
       child.on('close', (code) => {
         delete children[key]
-        finish()
-        signale.timeEnd(key)
-        if (err) {
-          signale.error(err)
-          killAll()
+        if (code > 0) {
+          exitNow(new Error(`${key} died with an exit code of ${code}`))
           return
         }
+        exitIfNeeded()
+        signale.timeEnd(key)
         signale.success(`${key} done!`)
       })
       child.on('error', (err) => {

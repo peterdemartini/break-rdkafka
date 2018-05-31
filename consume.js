@@ -44,11 +44,19 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
         const newPartitions = _.map(assignment, (r) => parseInt(r.partition, 10))
         assignments = _.union(assignments, newPartitions)
         logger.info(`assigned ${JSON.stringify(newPartitions)}`)
+        _.each(newPartitions, (partition) => {
+          if (!offsets[partition]) {
+            offsets[partition] = 0
+          }
+        })
         this.assign(assignment)
       } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
         const removedPartitions = _.map(assignment, (r) => parseInt(r.partition, 10))
         logger.info(`unassigned ${JSON.stringify(removedPartitions)}`)
         assignments = _.without(assignments, ...removedPartitions)
+        _.each(removedPartitions, (partition) => {
+          delete offsets[partition]
+        })
         this.unassign(assignment)
       } else {
         // We had a real error
@@ -62,14 +70,14 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
 
   // logging debug messages, if debug is enabled
   consumer.on('event.log', function (log) {
-    if (log.fac === 'HEARTBEAT') return
-    if (log.fac === 'COMMIT') return
-    logger.debug(log.fac, log.message)
+    if (/(fail|error|warn|issue|disconnect|problem)/gi.test(log.message)) {
+      logger.debug(log.message)
+    }
   })
 
   // logging all errors
   consumer.on('event.error', function (err) {
-    consumerDone(err)
+    logger.error(err)
   })
 
   const numMessages = 10000

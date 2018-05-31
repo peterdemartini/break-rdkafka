@@ -28,22 +28,20 @@ function produce ({ key, topicName, sentMessage, startBatch, kafkaBrokers }, cal
   const producer = new Kafka.Producer({
     'client.id': _.uniqueId('break-kafka-'),
     'debug': 'broker,topic',
-    'queue.buffering.max.messages': 500000,
-    'queue.buffering.max.ms': 1000,
-    'batch.num.messages': 100000,
     'metadata.broker.list': kafkaBrokers
   })
 
   // logging debug messages, if debug is enabled
   producer.on('event.log', function (log) {
-    if (log.fac === 'HEARTBEAT') return
-    logger.debug(log.fac, log.message)
+    if (/(fail|error|warn|issue|disconnect|problem)/gi.test(log.message)) {
+      logger.debug(log.message)
+    }
   })
   producer.setPollInterval(100)
 
   // logging all errors
   producer.on('event.error', function (err) {
-    producerDone(err)
+    logger.error(err)
   })
 
   // Wait for the ready event before producing
