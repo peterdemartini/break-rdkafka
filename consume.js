@@ -12,6 +12,7 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
   logger.info(`initializing...`)
   let processed = 0
   let finishInterval = setInterval(() => {
+    updateOffsets(offsets)
     if (shouldFinish()) {
       consumerDone()
     }
@@ -41,21 +42,21 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
     'auto.offset.reset': 'beginning',
     'rebalance_cb': function (err, assignment) {
       if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
-        const newPartitions = _.map(assignment, (r) => parseInt(r.partition, 10))
+        const newPartitions = _.map(assignment, (r) => _.toInteger(r.partition))
         assignments = _.union(assignments, newPartitions)
         logger.info(`assigned ${JSON.stringify(newPartitions)}`)
         _.each(newPartitions, (partition) => {
           if (!offsets[partition]) {
-            offsets[partition] = 0
+            offsets[`${partition}`] = 0
           }
         })
         this.assign(assignment)
       } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
-        const removedPartitions = _.map(assignment, (r) => parseInt(r.partition, 10))
+        const removedPartitions = _.map(assignment, (r) => _.toInteger(r.partition))
         logger.info(`unassigned ${JSON.stringify(removedPartitions)}`)
         assignments = _.without(assignments, ...removedPartitions)
         _.each(removedPartitions, (partition) => {
-          delete offsets[partition]
+          delete offsets[`${partition}`]
         })
         this.unassign(assignment)
       } else {
@@ -80,7 +81,7 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
     logger.error(err)
   })
 
-  const numMessages = 10000
+  const numMessages = 1000
 
   consumer.on('ready', function (arg) {
     logger.info(`ready!`)
@@ -94,28 +95,14 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
     if (ended) {
       return
     }
-    const partition = parseInt(m.partition, 10)
-    _.set(offsets, partition, m.offset)
+    const partition = _.toInteger(m.partition)
+    offsets[`${partition}`] = m.offset
 
     // committing offsets every numMessages
     if (offsets[partition] % (numMessages + 1) === numMessages) {
-      logger.pending(`processed ${processed}`)
       updateOffsets(offsets)
       consumer.commit(m)
     }
-    _.forEach(assignments, (par) => {
-      if (par === partition) {
-        return
-      }
-      const offset = _.get(offsets, par, 0)
-      if (offset < 0) return
-      const range = 10000
-      const upper = offset + range
-      const lower = offset - range
-      if (!_.inRange(offsets[partition], lower, upper)) {
-        logger.error(`Expected partition #${partition} (${m.offset}) of to be within range +/- ${range} of partition of #${par} (${offset}).`)
-      }
-    })
     processed++
     processedMessage(m)
   })

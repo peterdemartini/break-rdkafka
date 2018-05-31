@@ -10,12 +10,12 @@ function run () {
   const numProducers = 2
   const numConsumers = 5
   const messagesPerPartition = 100000
-  const messages = _.times(messagesPerPartition, () => {
+  const messages = _.flatten(_.times(messagesPerPartition, () => {
     return _.times(numPartitions, (partition) => ({
       partition,
       key: uuidv4()
     }))
-  })
+  }))
   const totalMessages = _.size(messages)
   const kafkaBrokers = 'localhost:9092,localhost:9093'
   const client = new kafka.Client('localhost:2181', _.uniqueId('break-kafka-'), {
@@ -28,27 +28,36 @@ function run () {
       signale.fatal(err)
       return
     }
-    const finalOffsets = {}
-    const processed = []
-    const sent = []
     const children = {}
-    const exitNow = (err) => {
-      signale.info('Exiting now...')
-      killAll(() => {
-        client.zk.deleteTopics([topicName], (dErr) => {
-          if (dErr) {
-            signale.error(dErr)
-          }
-          if (err) {
-            signale.fatal(err)
-            process.exit(1)
-          }
-          signale.success(`DONE!`)
-          console.dir(finalOffsets)
-          process.exit(0)
+    const finalOffsets = {}
+    const processed = {}
+    const sent = {}
+    _.times(numPartitions, (par) => {
+      sent[`${par}`] = 0
+      processed[`${par}`] = 0
+    })
+    const exitNow = _.once((err) => {
+      signale.info('Exiting in 5 seconds')
+      _.delay(() => {
+        signale.info('Exiting now...')
+        killAll(() => {
+          client.zk.deleteTopics([topicName], (dErr) => {
+            if (dErr) {
+              signale.error(dErr)
+            }
+            if (err) {
+              signale.fatal(err)
+              process.exit(1)
+            }
+            signale.success(`DONE!`)
+            console.log('offsets', finalOffsets)
+            console.log('processed', processed)
+            console.log('sent', sent)
+            process.exit(0)
+          })
         })
-      })
-    }
+      }, 5000)
+    })
     const killAll = (callback) => {
       if (_.isEmpty(children)) {
         callback()
@@ -70,30 +79,25 @@ function run () {
         exitNow()
       }
     }
-    const sentMessage = ({ key }) => {
-      const exists = _.find(sent, key)
-      if (exists) {
-        signale.warn(`sent ${key} more than once`)
-      }
-      sent.push(key)
-      if (_.size(sent) > totalMessages) {
+    const shouldFinishChildren = _.once(() => {
+      _.forEach(children, (child, key) => {
+        signale.info(`sending shouldFinish to ${key}`)
+        child.send({ fn: 'shouldFinish' })
+      })
+    })
+    const sentMessage = (input) => {
+      sent[`${input.partition}`] += 1
+      if (_.sum(_.values(sent)) > totalMessages) {
         signale.warn(`sent more messages than it should have`)
       }
     }
-    const processedMessage = ({ key }) => {
-      const exists = _.find(processed, key)
-      if (exists) {
-        signale.warn(`processed ${key} more than once`)
-      }
-      processed.push(key)
-      if (_.size(processed) === totalMessages) {
+    const processedMessage = (input) => {
+      processed[`${input.partition}`] += 1
+      if (_.sum(_.values(processed)) === totalMessages) {
         signale.info(`processed all of the messages`)
-        _.forEach(children, (child, key) => {
-          signale.info(`sending shouldFinish to ${key}`)
-          child.send({ fn: 'shouldFinish' })
-        })
+        shouldFinishChildren()
       }
-      if (_.size(processed) > totalMessages) {
+      if (_.sum(_.values(processed)) > totalMessages) {
         signale.warn(`processed more messages than it should have`)
       }
     }
