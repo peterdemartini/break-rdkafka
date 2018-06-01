@@ -18,6 +18,7 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
     }
   }, 500)
   const consumerDone = _.once((err) => {
+    logger.info('done!')
     clearInterval(finishInterval)
     ended = true
     logger.info(`offsets: ` + JSON.stringify(offsets, null, 2))
@@ -104,7 +105,7 @@ function consume ({ key, topicName, updateOffsets, shouldFinish, processedMessag
       consumer.commit(m)
     }
     processed++
-    processedMessage(m)
+    processedMessage({ partition })
   })
 
   consumer.on('disconnected', function (arg) {

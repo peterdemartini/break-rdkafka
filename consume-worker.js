@@ -9,7 +9,7 @@ const updateOffsets = (offsets) => {
 }
 
 const processedMessage = (msg) => {
-  process.send({ fn: 'sentMessage', msg })
+  process.send({ fn: 'processedMessage', msg })
 }
 
 const shouldFinish = () => {

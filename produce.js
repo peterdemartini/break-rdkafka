@@ -14,6 +14,7 @@ function produce ({ key, topicName, sentMessage, startBatch, kafkaBrokers }, cal
 
   let ended = false
   const producerDone = _.once((err) => {
+    logger.info('done!')
     ended = true
     if (producer.isConnected()) {
       producer.disconnect()
@@ -28,6 +29,9 @@ function produce ({ key, topicName, sentMessage, startBatch, kafkaBrokers }, cal
   const producer = new Kafka.Producer({
     'client.id': _.uniqueId('break-kafka-'),
     'debug': 'broker,topic',
+    'queue.buffering.max.messages': 500000,
+    'queue.buffering.max.ms': 1000,
+    'batch.num.messages': 100000,
     'metadata.broker.list': kafkaBrokers
   })
 

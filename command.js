@@ -36,8 +36,12 @@ function run () {
       sent[`${par}`] = 0
       processed[`${par}`] = 0
     })
+    const updateInterval = setInterval(() => {
+      signale.info(`UPDATE: processed: ${_.sum(_.values(processed))} sent: ${_.sum(_.values(sent))}`)
+    }, 1000)
     const exitNow = _.once((err) => {
       signale.info('Exiting in 5 seconds')
+      clearInterval(updateInterval)
       _.delay(() => {
         signale.info('Exiting now...')
         killAll(() => {
@@ -72,7 +76,7 @@ function run () {
       }, 5 * 1000)
     }
     const exitIfNeeded = () => {
-      if (_.isEmpty(messages)) {
+      if (_.sum(_.values(processed)) > totalMessages) {
         exitNow()
       }
       if (_.isEmpty(children)) {
@@ -87,7 +91,10 @@ function run () {
     })
     const sentMessage = (input) => {
       sent[`${input.partition}`] += 1
-      if (_.sum(_.values(sent)) > totalMessages) {
+      if (_.sum(_.values(sent)) === totalMessages) {
+        signale.warn(`sent all of the messages`)
+      }
+      if (_.sum(_.values(sent)) >= totalMessages) {
         signale.warn(`sent more messages than it should have`)
       }
     }
