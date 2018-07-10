@@ -6,9 +6,9 @@ const { fork } = require('child_process')
 
 function run () {
   const topicName = uuidv4()
-  const numPartitions = 10
-  const numProducers = 2
-  const numConsumers = 5
+  const numPartitions = 20
+  const numProducers = 3
+  const numConsumers = 7
   const messagesPerPartition = 100000
   const messages = _.flatten(_.times(messagesPerPartition, () => {
     return _.times(numPartitions, (partition) => ({
