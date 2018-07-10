@@ -98,6 +98,9 @@ function run () {
         signale.warn(`sent more messages than it should have`)
       }
     }
+    const logProcessedMessage = _.throttle((input) => {
+      signale.warn(`processed more messages than it should have`, JSON.stringify(input, null, 2))
+    }, 100)
     const processedMessage = (input) => {
       processed[`${input.partition}`] += 1
       if (_.sum(_.values(processed)) === totalMessages) {
@@ -105,7 +108,7 @@ function run () {
         shouldFinishChildren()
       }
       if (_.sum(_.values(processed)) > totalMessages) {
-        signale.warn(`processed more messages than it should have`)
+        logProcessedMessage(input)
       }
     }
     _.times(numProducers, (i) => {
@@ -153,7 +156,8 @@ function run () {
           BREAK_KAFKA_KEY: key,
           BREAK_KAFKA_TOPIC_NAME: topicName,
           BREAK_KAFKA_BROKERS: kafkaBrokers,
-          FORCE_COLOR: '1'
+          FORCE_COLOR: '1',
+          START_TIMEOUT: i * 5000
         },
         stdio: 'inherit'
       })
@@ -176,6 +180,9 @@ function run () {
         }
         if (data.fn === 'updateOffsets') {
           finalOffsets[key] = data.offsets
+        }
+        if (data.fn === 'ready') {
+          signale.info('worker ready')
         }
       })
       children[key] = child
