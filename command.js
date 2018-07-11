@@ -76,7 +76,7 @@ function run() {
         let deadTimeout = null;
 
         const updateInterval = setInterval(() => {
-            const consumeCount = _.sum(_.values(consumed));
+            const consumedCount = _.sum(_.values(consumed));
             const producedCount = _.sum(_.values(produced));
             const childrenCount = _.size(_.values(children));
 
@@ -88,19 +88,19 @@ function run() {
                 debug(`UPDATE: produced ${producedCount - lastProducedCount} more messages`);
             }
 
-            if (consumeCount <= 0) {
+            if (consumedCount <= 0) {
                 debug('UPDATE: waiting for messages to be consumed...');
-            } else if (consumeCount > totalMessages) {
-                debug(`UPDATE: all ${consumeCount} messages consumed`);
+            } else if (consumedCount > totalMessages) {
+                debug(`UPDATE: all ${consumedCount} messages consumed`);
             } else {
-                debug(`UPDATE: consumed ${producedCount - lastProducedCount} more messages`);
+                debug(`UPDATE: consumed ${consumedCount - lastConsumedCount} more messages`);
             }
 
             debug(`UPDATE: active child processes ${childrenCount}`);
 
-            if (consumeCount > 0 && consumeCount === lastConsumedCount) {
+            if (consumedCount - lastConsumedCount === 0) {
                 if (deadTimeout != null) return;
-                debug(`WARNING: Consume count (${consumeCount}) has stayed the same, will exit in 30 seconds if it doesn't changed`);
+                debug(`WARNING: Consume count (${consumedCount}) has stayed the same, will exit in 30 seconds if it doesn't changed`);
                 deadTimeout = setTimeout(() => {
                     exitNow(new Error(`Consume count (${lastConsumedCount}) has stayed the same for 30 seconds`));
                 }, 15 * 1000);
@@ -109,7 +109,7 @@ function run() {
 
             clearTimeout(deadTimeout);
             deadTimeout = null;
-            lastConsumedCount = consumeCount;
+            lastConsumedCount = consumedCount;
             lastProducedCount = producedCount;
         }, 5000);
 
