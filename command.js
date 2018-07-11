@@ -26,13 +26,13 @@ const messagesPerPartition = _.toSafeInteger(MESSAGES_PER_PARTITION);
 function run() {
     const topicName = genId('break-kafka');
 
-    signale.info(`initializing...
-        topic: ${topicName}
-        numPartitions: ${numPartitions}
-        totalMessages: ${messagesPerPartition * numPartitions}
-        consumers: ${numConsumers}
-        producers: ${numProducers}
-    `);
+    debug('initializing...', {
+        topicName,
+        numPartitions,
+        messagesPerPartition,
+        numConsumers,
+        numProducers
+    });
 
     const messages = makeMessages();
     const totalMessages = _.size(messages);
@@ -58,11 +58,32 @@ function run() {
             processed[`${par}`] = 0;
         });
 
-        const updateInterval = setInterval(() => {
-            debug(`UPDATE: processed: ${_.sum(_.values(processed))} sent: ${_.sum(_.values(sent))}`);
-        }, 1000);
+        const exitNow = _.once(exit);
+        let lastSentCount = -1;
+        let lastProcessedCount = -1;
+        let deadTimeout;
 
-        const exitNow = _.once((err) => {
+        const updateInterval = setInterval(() => {
+            const s = _.sum(_.values(sent));
+            const p = _.sum(_.values(processed));
+            const c = _.size(_.values(children));
+            debug(`UPDATE: processed: ${p}, sent: ${s}, active child processes ${c}`);
+
+            if (s === lastSentCount || p === lastProcessedCount) {
+                if (deadTimeout) return;
+                deadTimeout = setTimeout(() => {
+                    exitNow(new Error('Process or sent has stayed the same for 10 seconds'));
+                }, 10 * 1000);
+                return;
+            }
+
+            clearTimeout(deadTimeout);
+            deadTimeout = null;
+            lastSentCount = s;
+            lastProcessedCount = p;
+        }, 3000);
+
+        function exit(err) {
             debug('Exiting in 5 seconds');
             clearInterval(updateInterval);
 
@@ -88,7 +109,7 @@ function run() {
                     });
                 });
             }, 5000);
-        });
+        }
 
         function killAll(callback) {
             if (_.isEmpty(children)) {
@@ -134,7 +155,7 @@ function run() {
         };
 
         const debugToManyMessages = _.throttle((input) => {
-            debug('processed more messages than it should have', input);
+            debug(`processed more messages than it should have ${_.sum(_.values(processed))}`, input);
         }, 1000);
 
         const processedMessage = (input) => {

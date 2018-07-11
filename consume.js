@@ -5,7 +5,7 @@ const _ = require('lodash');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 const genId = require('./generate-id');
 
-function consume(options, callback) {
+function _consumer(options, callback) {
     const {
         topicName,
         updateAssignments,
@@ -19,6 +19,7 @@ function consume(options, callback) {
     let randomTimeoutId;
 
     let assignments = [];
+    let consumeTimeout;
     let processed = 0;
     const consumerDone = _.once(_consumerDone);
 
@@ -48,7 +49,7 @@ function consume(options, callback) {
         rebalance_cb(err, changed) {
             if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
                 rebalancing = false;
-                debug('assignment', changed);
+                debug('REBALANCE: assigned', _.map(changed, 'partition'));
 
                 assignments = _.unionWith(assignments, changed, (existing, updated) => {
                     if (existing.partition === updated.partition) {
@@ -62,7 +63,7 @@ function consume(options, callback) {
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 rebalancing = true;
 
-                debug('unassigned', changed);
+                debug('REBALANCE: unassigned', _.map(changed, 'partition'));
 
                 this.pause(assignments);
                 this.unassign(changed);
@@ -98,34 +99,63 @@ function consume(options, callback) {
         setTimeout(() => {
             debug('Starting...');
             // start consuming messages
-            consumer.consume();
+            consume();
         }, startTimeout);
 
         randomlyPauseAndResume();
     });
 
-    consumer.on('data', (m) => {
+    function consume() {
+        clearTimeout(consumeTimeout);
         if (ended) {
             return;
         }
-        const { offset, partition } = m;
-        assignments = _.map(assignments, (assignment) => {
-            if (assignment.partition === partition) {
-                assignment.offset = offset;
-            }
-            return assignment;
-        });
-
-        // committing offsets every numMessages
-        if (offset % (numMessages + 1) === numMessages) {
+        consumeTimeout = setTimeout(() => {
             if (rebalancing) {
-                debug('is rebalancing');
+                debug('WARNING about to consume when rebalancing');
             }
-            consumer.commit(m);
-        }
-        processed += 1;
-        processedMessage({ partition, offset });
-    });
+            consumer.setDefaultConsumeTimeout(1000);
+            consumer.consume(numMessages, (err, messages) => {
+                if (err) {
+                    debug('consume error', err);
+                    consumerDone(err);
+                    return;
+                }
+                if (_.isEmpty(messages)) {
+                    consume();
+                    return;
+                }
+
+                const offsets = {};
+                _.forEach(messages, (message) => {
+                    const { offset, partition } = message;
+                    assignments = _.map(assignments, (assignment) => {
+                        if (assignment.partition === partition) {
+                            assignment.offset = offset;
+                        }
+                        return assignment;
+                    });
+                    const current = _.get(offsets, [partition, 'offset'], 0);
+                    if (offset > current) {
+                        _.set(offsets, partition, message);
+                    }
+                    processedMessage({ partition, offset });
+                    processed += 1;
+                });
+
+                if (rebalancing) {
+                    debug('WARNING about to commit when rebalancing');
+                }
+
+                _.forEach(_.values(offsets), (message) => {
+                    consumer.commit(message);
+                });
+
+                consume();
+            });
+        }, 50);
+    }
+
 
     consumer.on('disconnected', () => {
         debug('consumer disconnected');
@@ -143,6 +173,7 @@ function consume(options, callback) {
 
     function _consumerDone(err) {
         debug('done!');
+        clearTimeout(consumeTimeout);
         clearTimeout(randomTimeoutId);
         clearInterval(finishInterval);
         ended = true;
@@ -166,18 +197,21 @@ function consume(options, callback) {
             }, 1000);
             return;
         }
-        const timeout = _.random(5000, 20000);
-        debug(`will pause and resume in ${timeout}ms`);
+
+        const pauseTimeout = _.random(5000, 20000);
+        const resumeTimeout = _.random(100, 3000);
+        debug(`will pause ${pauseTimeout}ms and resume in ${resumeTimeout}ms`);
+
         randomTimeoutId = setTimeout(() => {
-            const resumeTimeout = _.random(100, 3000);
-            debug(`pausing... will resume in ${resumeTimeout}ms`);
             consumer.pause(assignments);
+
             randomTimeoutId = setTimeout(() => {
                 consumer.resume(assignments);
+
                 randomlyPauseAndResume();
             }, resumeTimeout);
-        }, timeout);
+        }, pauseTimeout);
     }
 }
 
-module.exports = consume;
+module.exports = _consumer;
