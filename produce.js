@@ -96,7 +96,7 @@ function produce({ producedMessages, startBatch }, callback) {
     // starting the producer
     producer.connect();
 
-    function _producerDone(err) {
+    function _producerDone(err, cb = callback) {
         debug('done!');
         ended = true;
         if (producer.isConnected()) {
@@ -104,14 +104,14 @@ function produce({ producedMessages, startBatch }, callback) {
         }
         if (err) {
             console.error(err); // eslint-disable-line no-console
-            callback(err);
+            cb(err);
             return;
         }
-        callback();
+        cb();
     }
 
     sigtermHandler(() => new Promise((resolve, reject) => {
-        _producerDone((err) => {
+        _producerDone(null, (err) => {
             if (err) {
                 reject(err);
             } else {

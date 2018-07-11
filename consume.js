@@ -174,7 +174,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
         debug('connected');
     });
 
-    function _consumerDone(err) {
+    function _consumerDone(err, cb = callback) {
         debug('done!');
         clearTimeout(consumeTimeout);
         clearTimeout(randomTimeoutId);
@@ -186,7 +186,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
         }
         if (err) {
             console.error(err); // eslint-disable-line no-console
-            callback(err);
+            cb(err);
             return;
         }
         debug(`processed ${processed}`);
@@ -245,7 +245,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
     }
 
     sigtermHandler(() => new Promise((resolve, reject) => {
-        _consumerDone((err) => {
+        _consumerDone(null, (err) => {
             if (err) {
                 reject(err);
             } else {
