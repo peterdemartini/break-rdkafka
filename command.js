@@ -49,7 +49,7 @@ function run() {
             return;
         }
         const children = {};
-        const finalOffsets = {};
+        const assignments = {};
         const processed = {};
         const sent = {};
 
@@ -81,7 +81,7 @@ function run() {
                         }
 
                         signale.success('DONE!');
-                        debug('offsets', finalOffsets);
+                        debug('assignments', assignments);
                         debug('processed', processed);
                         debug('sent', sent);
                         process.exit(0);
@@ -231,8 +231,8 @@ function run() {
                 if (data.fn === 'processedMessage') {
                     processedMessage(data.msg);
                 }
-                if (data.fn === 'updateOffsets') {
-                    finalOffsets[key] = data.offsets;
+                if (data.fn === 'updateAssignments') {
+                    assignments[key] = data.assignments;
                 }
             });
 

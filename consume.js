@@ -8,7 +8,7 @@ const genId = require('./generate-id');
 function consume(options, callback) {
     const {
         topicName,
-        updateOffsets,
+        updateAssignments,
         shouldFinish,
         processedMessage,
         kafkaBrokers,
@@ -20,7 +20,6 @@ function consume(options, callback) {
 
     let assignments = [];
     let processed = 0;
-    const offsets = {};
     const consumerDone = _.once(_consumerDone);
 
     if (!topicName) {
@@ -30,7 +29,7 @@ function consume(options, callback) {
 
     debug('initializing...');
     const finishInterval = setInterval(() => {
-        updateOffsets(offsets);
+        updateAssignments(assignments);
         if (shouldFinish()) {
             debug('consumer was told it should finish');
             consumerDone();
@@ -46,24 +45,27 @@ function consume(options, callback) {
         'enable.auto.commit': false,
         'enable.auto.offset.store': false,
         'auto.offset.reset': 'beginning',
-        rebalance_cb(err, assignment) {
+        rebalance_cb(err, changed) {
             if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
                 rebalancing = false;
-                this.resume(assignment);
+                debug('assignment', changed);
 
-                debug('assignment', assignment);
-                assignments = _.unionBy(assignments, ['partition', 'topic']);
+                assignments = _.unionWith(assignments, changed, (existing, updated) => {
+                    if (existing.partition === updated.partition) {
+                        return true;
+                    }
+                    return false;
+                });
 
-                this.assign(assignment);
+                this.resume(assignments);
+                this.assign(changed);
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 rebalancing = true;
 
-                this.pause(assignment);
+                debug('unassigned', changed);
 
-                debug('unassigned', assignment);
-                assignments = _.without(assignments, assignment);
-
-                this.unassign(assignment);
+                this.pause(assignments);
+                this.unassign(changed);
             } else {
                 // We had a real error
                 console.error(err); // eslint-disable-line no-console
@@ -106,19 +108,23 @@ function consume(options, callback) {
         if (ended) {
             return;
         }
-        const partition = _.toInteger(m.partition);
-        offsets[`${partition}`] = m.offset;
+        const { offset, partition } = m;
+        assignments = _.map(assignments, (assignment) => {
+            if (assignment.partition === partition) {
+                assignment.offset = offset;
+            }
+            return assignment;
+        });
 
         // committing offsets every numMessages
-        if (offsets[partition] % (numMessages + 1) === numMessages) {
-            updateOffsets(offsets);
+        if (offset % (numMessages + 1) === numMessages) {
             if (rebalancing) {
                 debug('is rebalancing');
             }
             consumer.commit(m);
         }
         processed += 1;
-        processedMessage({ partition });
+        processedMessage({ partition, offset });
     });
 
     consumer.on('disconnected', () => {
@@ -140,7 +146,7 @@ function consume(options, callback) {
         clearTimeout(randomTimeoutId);
         clearInterval(finishInterval);
         ended = true;
-        debug('offsets', offsets);
+        debug('assignments', assignments);
         if (consumer.isConnected()) {
             consumer.disconnect();
         }
@@ -160,11 +166,11 @@ function consume(options, callback) {
             }, 1000);
             return;
         }
-        const timeout = _.random(1000, 10000);
+        const timeout = _.random(5000, 20000);
         debug(`will pause and resume in ${timeout}ms`);
         randomTimeoutId = setTimeout(() => {
             const resumeTimeout = _.random(100, 3000);
-            debug(`pausing assignedPartitions, will resume in ${resumeTimeout}ms`, assignments);
+            debug(`pausing... will resume in ${resumeTimeout}ms`);
             consumer.pause(assignments);
             randomTimeoutId = setTimeout(() => {
                 consumer.resume(assignments);

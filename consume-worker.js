@@ -14,8 +14,8 @@ process.on('message', ({ fn }) => {
     }
 });
 
-const updateOffsets = (offsets) => {
-    process.send({ fn: 'updateOffsets', offsets });
+const updateAssignments = (assignments) => {
+    process.send({ fn: 'updateAssignments', assignments });
 };
 
 const processedMessage = (msg) => {
@@ -26,7 +26,7 @@ const shouldFinish = () => finished;
 
 consume({
     topicName,
-    updateOffsets,
+    updateAssignments,
     processedMessage,
     shouldFinish,
     kafkaBrokers,
