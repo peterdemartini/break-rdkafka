@@ -4,15 +4,19 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
+    "lint": "eslint *.js",
+    "lint:fix": "eslint --fix *.js",
     "start": "node command.js"
   },
   "devDependencies": {
-    "standard": "^11.0.1"
+    "eslint": "^4.19.1",
+    "eslint-config-airbnb-base": "^13.0.0",
+    "eslint-plugin-import": "^2.13.0"
   },
   "dependencies": {
     "kafka-tools": "^1.1.0",
     "lodash": "^4.17.10",
-    "node-rdkafka": "2.3.3",
+    "node-rdkafka": "^2.3.4",
     "signale": "^1.2.1",
     "uuid": "^3.3.2"
   }
