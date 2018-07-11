@@ -84,20 +84,16 @@ function run() {
                 debug('UPDATE: waiting for messages to be produced...');
             } else if (producedCount > totalMessages) {
                 debug(`UPDATE: all ${producedCount} messages produced`);
-            } else if (lastProducedCount > 0 && producedCount !== lastProducedCount) {
-                debug(`UPDATE: produced ${producedCount - lastProducedCount} more messages`);
             } else {
-                debug('UPDATE: producing messages...', JSON.stringify(produced));
+                debug(`UPDATE: produced ${producedCount - lastProducedCount} more messages`);
             }
 
             if (consumeCount <= 0) {
                 debug('UPDATE: waiting for messages to be consumed...');
             } else if (consumeCount > totalMessages) {
                 debug(`UPDATE: all ${consumeCount} messages consumed`);
-            } else if (lastConsumedCount > 0 && consumeCount !== lastConsumedCount) {
-                debug(`UPDATE: consumed ${producedCount - lastProducedCount} more messages`);
             } else {
-                debug('UPDATE: consuming messages...', JSON.stringify(consumed));
+                debug(`UPDATE: consumed ${producedCount - lastProducedCount} more messages`);
             }
 
             debug(`UPDATE: active child processes ${childrenCount}`);
