@@ -71,41 +71,50 @@ function run() {
         });
 
         const exitNow = _.once(exit);
-        let lastProcessedCount = -1;
+        let lastConsumedCount = -1;
+        let lastProducedCount = -1;
         let deadTimeout = null;
 
         const updateInterval = setInterval(() => {
-            const s = _.sum(_.values(consumed));
-            const p = _.sum(_.values(produced));
-            const c = _.size(_.values(children));
-            if (p <= 0) {
+            const consumeCount = _.sum(_.values(consumed));
+            const producedCount = _.sum(_.values(produced));
+            const childrenCount = _.size(_.values(children));
+
+            if (producedCount <= 0) {
                 debug('UPDATE: waiting for messages to be produced...');
-            } else if (p > totalMessages) {
-                debug(`UPDATE: all ${p} messages produced`);
+            } else if (producedCount > totalMessages) {
+                debug(`UPDATE: all ${producedCount} messages produced`);
+            } else if (lastProducedCount > 0 && producedCount !== lastProducedCount) {
+                debug(`UPDATE: produced ${producedCount - lastProducedCount} more messages`);
             } else {
                 debug('UPDATE: producing messages...', JSON.stringify(produced));
             }
-            if (s <= 0) {
+
+            if (consumeCount <= 0) {
                 debug('UPDATE: waiting for messages to be consumed...');
-            } else if (s > totalMessages) {
-                debug(`UPDATE: all ${s} messages consumed`);
+            } else if (consumeCount > totalMessages) {
+                debug(`UPDATE: all ${consumeCount} messages consumed`);
+            } else if (lastConsumedCount > 0 && consumeCount !== lastConsumedCount) {
+                debug(`UPDATE: consumed ${producedCount - lastProducedCount} more messages`);
             } else {
                 debug('UPDATE: consuming messages...', JSON.stringify(consumed));
             }
-            debug(`UPDATE: active child processes ${c}`);
 
-            if (p > 0 && p === lastProcessedCount) {
+            debug(`UPDATE: active child processes ${childrenCount}`);
+
+            if (consumeCount > 0 && consumeCount === lastConsumedCount) {
                 if (deadTimeout != null) return;
-                debug(`WARNING: Processed (${p}) has stayed the same, will exit in 30 seconds if it doesn't changed`);
+                debug(`WARNING: Consume count (${consumeCount}) has stayed the same, will exit in 30 seconds if it doesn't changed`);
                 deadTimeout = setTimeout(() => {
-                    exitNow(new Error(`Processed (${lastProcessedCount}) has stayed the same for 30 seconds`));
+                    exitNow(new Error(`Consume count (${lastConsumedCount}) has stayed the same for 30 seconds`));
                 }, 15 * 1000);
                 return;
             }
 
             clearTimeout(deadTimeout);
             deadTimeout = null;
-            lastProcessedCount = p;
+            lastConsumedCount = consumeCount;
+            lastProducedCount = producedCount;
         }, 5000);
 
         function exit(err, done) {
