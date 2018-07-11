@@ -1,21 +1,19 @@
 'use strict';
 
+const sigtermHandler = require('sigterm-handler');
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 const genId = require('./generate-id');
 
-function _consumer(options, callback) {
-    const {
-        topicName,
-        updateAssignments,
-        shouldFinish,
-        processedMessage,
-        kafkaBrokers,
-        startTimeout,
-        disablePauseAndResume
-    } = options;
+const useCommitAsync = process.env.USE_COMMIT_ASYNC === 'true';
+const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
+const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
+const disablePauseAndResume = process.env.DISABLE_PAUSE_AND_RESUME === 'true';
+const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
+const batchSize = parseInt(process.env.BATCH_SIZE, 10);
 
+function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callback) {
     let paused = false;
     let rebalancing = false;
     let randomTimeoutId;
@@ -49,17 +47,20 @@ function _consumer(options, callback) {
         'auto.offset.reset': 'smallest',
         rebalance_cb(err, changed) {
             if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
-                const updated = _.reject(changed, ({ partition }) => _.some(assignments, { partition }));
+                rebalancing = false;
+                const updated = _.filter(changed, ({ partition }) => {
+                    const isNew = !_.some(assignments, { partition });
+                    return isNew;
+                });
                 assignments = _.unionBy(assignments, updated, 'partition');
                 debug('REBALANCE: assigned', assignments);
 
                 this.assign(changed);
-                rebalancing = false;
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
+                rebalancing = true;
                 debug('REBALANCE: unassigned', _.map(changed, 'partition'));
 
                 this.unassign(changed);
-                rebalancing = true;
             } else {
                 // We had a real error
                 console.error(err); // eslint-disable-line no-console
@@ -80,8 +81,6 @@ function _consumer(options, callback) {
     consumer.on('event.error', (err) => {
         console.error(err); // eslint-disable-line no-console
     });
-
-    const numMessages = 1000;
 
     consumer.on('ready', () => {
         debug('ready!');
@@ -107,8 +106,8 @@ function _consumer(options, callback) {
                 consume();
                 return;
             }
-            consumer.setDefaultConsumeTimeout(1000);
-            consumer.consume(numMessages, (err, messages) => {
+            consumer.setDefaultConsumeTimeout(batchSize);
+            consumer.consume(batchSize, (err, messages) => {
                 if (err) {
                     debug('consume error', err);
                     consumerDone(err);
@@ -121,7 +120,7 @@ function _consumer(options, callback) {
 
                 const offsets = {};
                 _.forEach(messages, (message) => {
-                    const { offset, partition } = message;
+                    const { offset, partition, topic } = message;
                     assignments = _.map(assignments, (assignment) => {
                         if (assignment.partition === partition) {
                             assignment.offset = offset;
@@ -130,9 +129,8 @@ function _consumer(options, callback) {
                     });
                     const current = _.get(offsets, [partition, 'offset'], 0);
                     if (offset > current) {
-                        _.set(offsets, partition, message);
+                        _.set(offsets, partition, { offset, partition, topic });
                     }
-                    processedMessage({ partition, offset });
                     processed += 1;
                 });
 
@@ -140,10 +138,22 @@ function _consumer(options, callback) {
                     debug('WARNING: about to commit when paused or rebalancing');
                 }
 
+                if (useCommitAsync) {
+                    debug('committing async...', _.values(offsets));
+                } else {
+                    debug('committing sync...', _.values(offsets));
+                }
                 _.forEach(_.values(offsets), (message) => {
-                    consumer.commitSync(message);
+                    if (useCommitAsync) {
+                        consumer.commit(message);
+                    } else {
+                        consumer.commitSync(message);
+                    }
                 });
+                debug('committing took');
 
+
+                consumedMessages(messages);
                 consume();
             });
         }, 100);
@@ -191,15 +201,15 @@ function _consumer(options, callback) {
             return;
         }
 
-        if (!_.random(0, 10)) {
+        if (_.random(0, 5)) {
             randomTimeoutId = setTimeout(() => {
                 randomlyPauseAndResume();
             }, 5000);
             return;
         }
 
-        const pauseTimeout = _.random(1000, 20000);
-        const resumeTimeout = _.random(1000, 20000);
+        const pauseTimeout = _.random(1000, 30 * 1000);
+        const resumeTimeout = _.random(1000, 15 * 1000);
         debug(`CHAOS: will pause in ${pauseTimeout}ms and resume in ${resumeTimeout}ms`);
 
         randomTimeoutId = setTimeout(() => {
@@ -233,6 +243,16 @@ function _consumer(options, callback) {
         }
         paused = false;
     }
+
+    sigtermHandler(() => new Promise((resolve, reject) => {
+        _consumerDone((err) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve();
+            }
+        });
+    }));
 }
 
 module.exports = _consumer;

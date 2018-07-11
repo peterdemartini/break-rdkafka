@@ -2,11 +2,6 @@
 
 const consume = require('./consume');
 
-const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
-const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
-const disablePauseAndResume = process.env.DISABLE_PAUSE_AND_RESUME === 'true';
-const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
-
 let finished = false;
 
 process.on('message', ({ fn }) => {
@@ -19,20 +14,16 @@ const updateAssignments = (assignments) => {
     process.send({ fn: 'updateAssignments', assignments });
 };
 
-const processedMessage = (msg) => {
-    process.send({ fn: 'processedMessage', msg });
+const consumedMessages = (msg) => {
+    process.send({ fn: 'consumedMessages', msg });
 };
 
 const shouldFinish = () => finished;
 
 consume({
-    topicName,
     updateAssignments,
-    processedMessage,
+    consumedMessages,
     shouldFinish,
-    kafkaBrokers,
-    startTimeout,
-    disablePauseAndResume
 }, (err) => {
     if (err) {
         throw err;

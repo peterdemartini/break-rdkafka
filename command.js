@@ -1,5 +1,6 @@
 'use strict';
 
+const sigtermHandler = require('sigterm-handler');
 const _ = require('lodash');
 const { kafka } = require('kafka-tools');
 const signale = require('signale');
@@ -11,11 +12,14 @@ const genId = require('./generate-id');
 const {
     KAFKA_BROKERS = 'localhost:9092,localhost:9093',
     NUM_CONSUMERS = '5',
-    NUM_PRODUCERS = '2',
+    NUM_PRODUCERS = '3',
     NUM_PARTITIONS = '20',
     MESSAGES_PER_PARTITION = '200000',
     DEBUG = 'break-rdkafka',
     DISABLE_PAUSE_AND_RESUME = 'false',
+    START_TIMEOUT = '1000',
+    USE_COMMIT_ASYNC = 'false',
+    BATCH_SIZE = '5000'
 } = process.env;
 
 const kafkaBrokers = KAFKA_BROKERS;
@@ -23,6 +27,8 @@ const numProducers = _.toSafeInteger(NUM_PRODUCERS);
 const numConsumers = _.toSafeInteger(NUM_CONSUMERS);
 const numPartitions = _.toSafeInteger(NUM_PARTITIONS);
 const messagesPerPartition = _.toSafeInteger(MESSAGES_PER_PARTITION);
+const startTimeout = _.toSafeInteger(START_TIMEOUT);
+const batchSize = _.toSafeInteger(BATCH_SIZE);
 
 function run() {
     const topicName = genId('break-kafka');
@@ -32,7 +38,12 @@ function run() {
         numPartitions,
         messagesPerPartition,
         numConsumers,
-        numProducers
+        numProducers,
+        batchSize,
+        startTimeout,
+        DISABLE_PAUSE_AND_RESUME,
+        USE_COMMIT_ASYNC,
+        BATCH_SIZE
     });
 
     const messages = makeMessages();
@@ -51,27 +62,41 @@ function run() {
         }
         const children = {};
         const assignments = {};
-        const processed = {};
-        const sent = {};
+        const produced = {};
+        const consumed = {};
 
         _.times(numPartitions, (par) => {
-            sent[`${par}`] = 0;
-            processed[`${par}`] = 0;
+            consumed[`${par}`] = 0;
+            produced[`${par}`] = 0;
         });
 
         const exitNow = _.once(exit);
         let lastProcessedCount = -1;
-        let deadTimeout;
+        let deadTimeout = null;
 
         const updateInterval = setInterval(() => {
-            const s = _.sum(_.values(sent));
-            const p = _.sum(_.values(processed));
+            const s = _.sum(_.values(consumed));
+            const p = _.sum(_.values(produced));
             const c = _.size(_.values(children));
-            debug(`UPDATE: processed: ${p}, sent: ${s}, active child processes ${c}`);
+            if (p <= 0) {
+                debug('UPDATE: waiting for messages to be produced...');
+            } else if (p > totalMessages) {
+                debug(`UPDATE: all ${p} messages produced`);
+            } else {
+                debug('UPDATE: producing messages...', JSON.stringify(produced));
+            }
+            if (s <= 0) {
+                debug('UPDATE: waiting for messages to be consumed...');
+            } else if (s > totalMessages) {
+                debug(`UPDATE: all ${s} messages consumed`);
+            } else {
+                debug('UPDATE: consuming messages...', JSON.stringify(consumed));
+            }
+            debug(`UPDATE: active child processes ${c}`);
 
-            if (p === lastProcessedCount) {
-                if (deadTimeout == null) return;
-                debug(`Processed (${p}) has stayed the same for 30 seconds`);
+            if (p > 0 && p === lastProcessedCount) {
+                if (deadTimeout != null) return;
+                debug(`WARNING: Processed (${p}) has stayed the same, will exit in 30 seconds if it doesn't changed`);
                 deadTimeout = setTimeout(() => {
                     exitNow(new Error(`Processed (${lastProcessedCount}) has stayed the same for 30 seconds`));
                 }, 15 * 1000);
@@ -81,11 +106,12 @@ function run() {
             clearTimeout(deadTimeout);
             deadTimeout = null;
             lastProcessedCount = p;
-        }, 3000);
+        }, 5000);
 
-        function exit(err) {
+        function exit(err, done) {
             debug('Exiting in 5 seconds', err);
             clearInterval(updateInterval);
+            clearTimeout(deadTimeout);
 
             _.delay(() => {
                 debug('Exiting now...');
@@ -98,14 +124,22 @@ function run() {
 
                         if (err) {
                             signale.fatal(err);
-                            process.exit(1);
                         }
 
                         signale.success('DONE!');
                         debug('assignments', assignments);
-                        debug('processed', processed);
-                        debug('sent', sent);
-                        process.exit(0);
+                        debug('produced', produced);
+                        debug('consumed', consumed);
+                        if (_.isFunction(done)) {
+                            done();
+                            return;
+                        }
+
+                        if (err) {
+                            process.exit(1);
+                        } else {
+                            process.exit(0);
+                        }
                     });
                 });
             }, 5000);
@@ -129,7 +163,7 @@ function run() {
         }
 
         function exitIfNeeded() {
-            if (_.sum(_.values(processed)) > totalMessages) {
+            if (_.sum(_.values(produced)) > totalMessages) {
                 exitNow();
             }
             if (_.isEmpty(children)) {
@@ -144,30 +178,38 @@ function run() {
             });
         });
 
-        const sentMessage = (input) => {
-            sent[`${input.partition}`] += 1;
-            if (_.sum(_.values(sent)) === totalMessages) {
-                signale.success(`sent all of ${totalMessages} messages`);
-            }
-            if (_.sum(_.values(sent)) > totalMessages) {
-                debug(`sent more messages than it should have (${_.sum(_.values(sent))})`);
-            }
-        };
-
-        const debugToManyMessages = _.throttle((input) => {
-            debug(`processed more messages than it should have (${_.sum(_.values(processed))})`, input);
+        const debugToManyMessages = _.throttle((count) => {
+            debug(`consumed more messages than it should have (${count})`);
         }, 1000);
 
-        const processedMessage = (input) => {
-            processed[`${input.partition}`] += 1;
-            if (_.sum(_.values(processed)) === totalMessages) {
-                signale.success(`processed all of ${totalMessages} messages`);
+        function consumedMessages(input) {
+            _.forEach(input, (message) => {
+                consumed[`${message.partition}`] += 1;
+            });
+            const count = _.sum(_.values(consumed));
+            if (count === totalMessages) {
+                signale.success(`consumed all of ${totalMessages} messages`);
+                debug('consumed result', consumed);
                 shouldFinishChildren();
             }
-            if (_.sum(_.values(processed)) > totalMessages) {
-                debugToManyMessages(input);
+            if (count > totalMessages) {
+                debugToManyMessages(count);
             }
-        };
+        }
+
+        function producedMessages(input) {
+            _.forEach(input, (message) => {
+                produced[`${message.partition}`] += 1;
+            });
+            const count = _.sum(_.values(produced));
+            if (count === totalMessages) {
+                signale.success(`produced all of ${totalMessages} messages`);
+                debug('produced result', produced);
+            }
+            if (count > totalMessages) {
+                debug(`produced more messages than it should have (${count})`);
+            }
+        }
 
         _.times(numProducers, (i) => {
             const key = `produce-${i}`;
@@ -178,6 +220,7 @@ function run() {
                     BREAK_KAFKA_KEY: key,
                     BREAK_KAFKA_TOPIC_NAME: topicName,
                     BREAK_KAFKA_BROKERS: kafkaBrokers,
+                    BATCH_SIZE: batchSize,
                     FORCE_COLOR: '1',
                     DEBUG,
                 },
@@ -201,11 +244,12 @@ function run() {
             });
 
             child.on('message', (data) => {
-                if (data.fn === 'sentMessage') {
-                    sentMessage(data.msg);
+                if (data.fn === 'producedMessages') {
+                    producedMessages(data.msg);
                 }
                 if (data.fn === 'getMessageBatch') {
-                    const batch = messages.splice(0, 1000);
+                    const randomStart = _.random(0, _.size(messages));
+                    const batch = messages.splice(randomStart, 5000);
                     const responseId = data.requestId;
                     child.send({ fn: 'receiveMessageBatch', messages: batch, responseId });
                 }
@@ -224,10 +268,12 @@ function run() {
                     BREAK_KAFKA_KEY: key,
                     BREAK_KAFKA_TOPIC_NAME: topicName,
                     BREAK_KAFKA_BROKERS: kafkaBrokers,
+                    BATCH_SIZE: batchSize,
                     FORCE_COLOR: '1',
-                    START_TIMEOUT: i * 5000,
+                    START_TIMEOUT: i * startTimeout,
                     DEBUG,
                     DISABLE_PAUSE_AND_RESUME,
+                    USE_COMMIT_ASYNC
                 },
                 stdio: 'inherit'
             });
@@ -250,8 +296,8 @@ function run() {
             });
 
             child.on('message', (data) => {
-                if (data.fn === 'processedMessage') {
-                    processedMessage(data.msg);
+                if (data.fn === 'consumedMessages') {
+                    consumedMessages(data.msg);
                 }
                 if (data.fn === 'updateAssignments') {
                     assignments[key] = data.assignments;
@@ -260,15 +306,29 @@ function run() {
 
             children[key] = child;
         });
+
+        sigtermHandler(() => new Promise((resolve, reject) => {
+            exit(null, (err) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    setTimeout(() => {
+                        resolve();
+                    }, 5000);
+                }
+            });
+        }));
     });
 
     function makeMessages() {
         signale.time('making messages');
-        const perPartition = partition => _.times(messagesPerPartition, () => ({
-            partition,
-            key: genId('', 15)
-        }));
-        const results = _.flatten(_.times(numPartitions, perPartition));
+        const results = [];
+        _.times(numPartitions, (partition) => {
+            _.times(messagesPerPartition, () => {
+                const key = genId(null, 15);
+                results.push({ key, partition });
+            });
+        });
         signale.timeEnd('making messages');
         return results;
     }

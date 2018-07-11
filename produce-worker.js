@@ -3,11 +3,8 @@
 const genId = require('./generate-id');
 const produce = require('./produce');
 
-const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
-const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
-
-const sentMessage = (msg) => {
-    process.send({ fn: 'sentMessage', msg });
+const producedMessages = (msg) => {
+    process.send({ fn: 'producedMessages', msg });
 };
 
 const startBatch = (callback) => {
@@ -27,16 +24,14 @@ const startBatch = (callback) => {
 };
 
 process.on('message', ({ fn, msg }) => {
-    if (fn === 'sentMessage') {
-        sentMessage(msg);
+    if (fn === 'producedMessages') {
+        producedMessages(msg);
     }
 });
 
 produce({
-    topicName,
-    sentMessage,
+    producedMessages,
     startBatch,
-    kafkaBrokers
 }, (err) => {
     if (err) {
         throw err;

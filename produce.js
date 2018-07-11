@@ -1,35 +1,32 @@
 'use strict';
 
+const sigtermHandler = require('sigterm-handler');
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 const genId = require('./generate-id');
 
-function produce(options, callback) {
-    const {
-        topicName,
-        sentMessage,
-        startBatch,
-        kafkaBrokers
-    } = options;
+const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
+const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
+const batchSize = parseInt(process.env.BATCH_SIZE, 10);
 
+if (!topicName) {
+    console.error('requires a topicName'); // eslint-disable-line no-console
+    process.exit(1);
+}
 
-    if (!topicName) {
-        console.error('requires a topicName'); // eslint-disable-line no-console
-        process.exit(1);
-    }
-
+function produce({ producedMessages, startBatch }, callback) {
     debug('initializing...');
 
     let ended = false;
     const producerDone = _.once(_producerDone);
 
     const producer = new Kafka.Producer({
-        'client.id': _.uniqueId('break-kafka-'),
+        'client.id': genId('break-kafka-'),
         debug: 'broker,topic',
-        'queue.buffering.max.messages': 500000,
-        'queue.buffering.max.ms': 1000,
-        'batch.num.messages': 100000,
+        'queue.buffering.max.messages': batchSize * 5,
+        'queue.buffering.max.ms': 10 * 1000,
+        'batch.num.messages': batchSize,
         'metadata.broker.list': kafkaBrokers
     });
 
@@ -50,7 +47,7 @@ function produce(options, callback) {
     // Wait for the ready event before producing
     producer.on('ready', () => {
         debug('ready!');
-        const sendMessages = () => {
+        const processBatch = () => {
             startBatch((err, messages) => {
                 if (err) {
                     producerDone(err);
@@ -60,29 +57,36 @@ function produce(options, callback) {
                     producerDone();
                     return;
                 }
-                const sendAfter = _.after(_.size(messages), () => {
-                    sendMessages();
+                const count = _.size(messages);
+                const sendAfter = _.after(count, () => {
+                    producer.flush(60000, (flusherr) => {
+                        if (err) debug('flush error', flusherr);
+                        producedMessages(messages);
+                        setTimeout(() => {
+                            processBatch();
+                        }, 100);
+                    });
                 });
                 _.forEach(messages, (message) => {
                     if (ended) {
                         return;
                     }
-                    const value = Buffer.from(genId(message.key));
+                    const value = Buffer.from(message.key);
                     const result = producer.produce(
                         topicName,
                         message.partition,
                         value,
-                        message.key
+                        null,
+                        Date.now()
                     );
                     if (result !== true) {
                         debug(`produce did not return true, got ${result}`);
                     }
-                    sentMessage(message);
                     sendAfter();
                 });
             });
         };
-        sendMessages();
+        processBatch();
     });
 
     producer.on('disconnected', () => {
@@ -105,6 +109,16 @@ function produce(options, callback) {
         }
         callback();
     }
+
+    sigtermHandler(() => new Promise((resolve, reject) => {
+        _producerDone((err) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve();
+            }
+        });
+    }));
 }
 
 module.exports = produce;
