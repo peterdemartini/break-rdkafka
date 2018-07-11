@@ -10,7 +10,8 @@ function consume(options, callback) {
         updateOffsets,
         shouldFinish,
         processedMessage,
-        kafkaBrokers
+        kafkaBrokers,
+        startTimeout
     } = options;
 
     let rebalancing = true;
@@ -89,9 +90,14 @@ function consume(options, callback) {
     consumer.on('ready', () => {
         debug('ready!');
 
+        debug(`Waiting for ${startTimeout}ms before starting...`);
         consumer.subscribe([topicName]);
-        // start consuming messages
-        consumer.consume();
+
+        setTimeout(() => {
+            debug('Starting...');
+            // start consuming messages
+            consumer.consume();
+        }, startTimeout);
     });
 
     consumer.on('data', (m) => {
