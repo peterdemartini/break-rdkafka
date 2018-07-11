@@ -14,7 +14,8 @@ const {
     NUM_PRODUCERS = '2',
     NUM_PARTITIONS = '20',
     MESSAGES_PER_PARTITION = '200000',
-    DEBUG = 'break-rdkafka'
+    DEBUG = 'break-rdkafka',
+    DISABLE_PAUSE_AND_RESUME = 'false',
 } = process.env;
 
 const kafkaBrokers = KAFKA_BROKERS;
@@ -70,9 +71,10 @@ function run() {
 
             if (p === lastProcessedCount) {
                 if (deadTimeout == null) return;
+                debug(`Processed (${p}) has stayed the same for 30 seconds`);
                 deadTimeout = setTimeout(() => {
                     exitNow(new Error(`Processed (${lastProcessedCount}) has stayed the same for 30 seconds`));
-                }, 30 * 1000);
+                }, 15 * 1000);
                 return;
             }
 
@@ -147,13 +149,13 @@ function run() {
             if (_.sum(_.values(sent)) === totalMessages) {
                 signale.success(`sent all of ${totalMessages} messages`);
             }
-            if (_.sum(_.values(sent)) >= totalMessages) {
-                debug('sent more messages than it should have');
+            if (_.sum(_.values(sent)) > totalMessages) {
+                debug(`sent more messages than it should have (${_.sum(_.values(sent))})`);
             }
         };
 
         const debugToManyMessages = _.throttle((input) => {
-            debug(`processed more messages than it should have ${_.sum(_.values(processed))}`, input);
+            debug(`processed more messages than it should have (${_.sum(_.values(processed))})`, input);
         }, 1000);
 
         const processedMessage = (input) => {
@@ -225,6 +227,7 @@ function run() {
                     FORCE_COLOR: '1',
                     START_TIMEOUT: i * 5000,
                     DEBUG,
+                    DISABLE_PAUSE_AND_RESUME,
                 },
                 stdio: 'inherit'
             });

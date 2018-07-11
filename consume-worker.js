@@ -4,6 +4,7 @@ const consume = require('./consume');
 
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
+const disablePauseAndResume = process.env.DISABLE_PAUSE_AND_RESUME === 'true';
 const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
 
 let finished = false;
@@ -30,7 +31,8 @@ consume({
     processedMessage,
     shouldFinish,
     kafkaBrokers,
-    startTimeout
+    startTimeout,
+    disablePauseAndResume
 }, (err) => {
     if (err) {
         throw err;

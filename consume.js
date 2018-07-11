@@ -12,7 +12,8 @@ function _consumer(options, callback) {
         shouldFinish,
         processedMessage,
         kafkaBrokers,
-        startTimeout
+        startTimeout,
+        disablePauseAndResume
     } = options;
 
     let paused = false;
@@ -38,7 +39,6 @@ function _consumer(options, callback) {
         }
     }, 500);
 
-
     const consumer = new Kafka.KafkaConsumer({
         'client.id': genId('break-kafka-'),
         debug: 'cgrp,topic',
@@ -46,19 +46,18 @@ function _consumer(options, callback) {
         'group.id': `${topicName}-group`,
         'enable.auto.commit': false,
         'enable.auto.offset.store': false,
-        'auto.offset.reset': 'beginning',
+        'auto.offset.reset': 'smallest',
         rebalance_cb(err, changed) {
             if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
-                debug('REBALANCE: assigned', _.map(changed, 'partition'));
-
-                assignments = _.filter(assignments, ({ partition }) => _.some(changed, { partition }));
+                const updated = _.reject(changed, ({ partition }) => _.some(assignments, { partition }));
+                assignments = _.unionBy(assignments, updated, 'partition');
+                debug('REBALANCE: assigned', assignments);
 
                 this.assign(changed);
                 rebalancing = false;
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 debug('REBALANCE: unassigned', _.map(changed, 'partition'));
 
-                this.pause(changed);
                 this.unassign(changed);
                 rebalancing = true;
             } else {
@@ -94,9 +93,8 @@ function _consumer(options, callback) {
             debug('Starting...');
             // start consuming messages
             consume();
+            randomlyPauseAndResume();
         }, startTimeout);
-
-        randomlyPauseAndResume();
     });
 
     function consume() {
@@ -106,7 +104,6 @@ function _consumer(options, callback) {
         }
         consumeTimeout = setTimeout(() => {
             if (paused || rebalancing) {
-                debug('currently paused or rebalancing will try consuming soon');
                 consume();
                 return;
             }
@@ -144,7 +141,7 @@ function _consumer(options, callback) {
                 }
 
                 _.forEach(_.values(offsets), (message) => {
-                    consumer.commit(message);
+                    consumer.commitSync(message);
                 });
 
                 consume();
@@ -201,24 +198,40 @@ function _consumer(options, callback) {
             return;
         }
 
-        const pauseTimeout = _.random(1000, 30000);
-        const resumeTimeout = _.random(1000, 30000);
+        const pauseTimeout = _.random(1000, 20000);
+        const resumeTimeout = _.random(1000, 20000);
         debug(`CHAOS: will pause in ${pauseTimeout}ms and resume in ${resumeTimeout}ms`);
 
         randomTimeoutId = setTimeout(() => {
-            if (!paused) {
-                // consumer.pause(assignments);
-                paused = true;
-            }
+            pause();
 
             randomTimeoutId = setTimeout(() => {
-                if (paused) {
-                    // consumer.resume(assignments);
-                    paused = false;
-                }
+                resume();
                 randomlyPauseAndResume();
             }, resumeTimeout);
         }, pauseTimeout);
+    }
+
+    function pause() {
+        if (paused) return;
+        if (!disablePauseAndResume) {
+            debug('PAUSING!');
+            consumer.pause(assignments);
+        } else {
+            debug('Pausing is actually disabled');
+        }
+        paused = true;
+    }
+
+    function resume() {
+        if (paused) return;
+        if (!disablePauseAndResume) {
+            debug('RESUMING!');
+            consumer.resume(assignments);
+        } else {
+            debug('Resuming is actually disabled');
+        }
+        paused = false;
     }
 }
 
