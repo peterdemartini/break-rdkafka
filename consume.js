@@ -15,7 +15,8 @@ function _consumer(options, callback) {
         startTimeout
     } = options;
 
-    let rebalancing = true;
+    let paused = false;
+    let rebalancing = false;
     let randomTimeoutId;
 
     let assignments = [];
@@ -48,25 +49,18 @@ function _consumer(options, callback) {
         'auto.offset.reset': 'beginning',
         rebalance_cb(err, changed) {
             if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
-                rebalancing = false;
                 debug('REBALANCE: assigned', _.map(changed, 'partition'));
 
-                assignments = _.unionWith(assignments, changed, (existing, updated) => {
-                    if (existing.partition === updated.partition) {
-                        return true;
-                    }
-                    return false;
-                });
+                assignments = _.filter(assignments, ({ partition }) => _.some(changed, { partition }));
 
-                this.resume(assignments);
                 this.assign(changed);
+                rebalancing = false;
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
-                rebalancing = true;
-
                 debug('REBALANCE: unassigned', _.map(changed, 'partition'));
 
-                this.pause(assignments);
+                this.pause(changed);
                 this.unassign(changed);
+                rebalancing = true;
             } else {
                 // We had a real error
                 console.error(err); // eslint-disable-line no-console
@@ -111,8 +105,10 @@ function _consumer(options, callback) {
             return;
         }
         consumeTimeout = setTimeout(() => {
-            if (rebalancing) {
-                debug('WARNING about to consume when rebalancing');
+            if (paused || rebalancing) {
+                debug('currently paused or rebalancing will try consuming soon');
+                consume();
+                return;
             }
             consumer.setDefaultConsumeTimeout(1000);
             consumer.consume(numMessages, (err, messages) => {
@@ -143,8 +139,8 @@ function _consumer(options, callback) {
                     processed += 1;
                 });
 
-                if (rebalancing) {
-                    debug('WARNING about to commit when rebalancing');
+                if (paused || rebalancing) {
+                    debug('WARNING: about to commit when paused or rebalancing');
                 }
 
                 _.forEach(_.values(offsets), (message) => {
@@ -153,12 +149,12 @@ function _consumer(options, callback) {
 
                 consume();
             });
-        }, 50);
+        }, 100);
     }
 
 
     consumer.on('disconnected', () => {
-        debug('consumer disconnected');
+        debug('WARNING: consumer disconnected');
         consumerDone(new Error('Consumer Disconnected'));
     });
 
@@ -198,16 +194,28 @@ function _consumer(options, callback) {
             return;
         }
 
-        const pauseTimeout = _.random(5000, 20000);
-        const resumeTimeout = _.random(100, 3000);
-        debug(`will pause ${pauseTimeout}ms and resume in ${resumeTimeout}ms`);
+        if (!_.random(0, 10)) {
+            randomTimeoutId = setTimeout(() => {
+                randomlyPauseAndResume();
+            }, 5000);
+            return;
+        }
+
+        const pauseTimeout = _.random(1000, 30000);
+        const resumeTimeout = _.random(1000, 30000);
+        debug(`CHAOS: will pause in ${pauseTimeout}ms and resume in ${resumeTimeout}ms`);
 
         randomTimeoutId = setTimeout(() => {
-            consumer.pause(assignments);
+            if (!paused) {
+                consumer.pause(assignments);
+                paused = true;
+            }
 
             randomTimeoutId = setTimeout(() => {
-                consumer.resume(assignments);
-
+                if (paused) {
+                    consumer.resume(assignments);
+                    paused = false;
+                }
                 randomlyPauseAndResume();
             }, resumeTimeout);
         }, pauseTimeout);

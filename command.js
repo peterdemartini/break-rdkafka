@@ -72,8 +72,8 @@ function run() {
             if (s === lastSentCount || p === lastProcessedCount) {
                 if (deadTimeout) return;
                 deadTimeout = setTimeout(() => {
-                    exitNow(new Error('Process or sent has stayed the same for 10 seconds'));
-                }, 10 * 1000);
+                    exitNow(new Error(`Processed (${p}) or sent (${s}) has stayed the same for 30 seconds`));
+                }, 30 * 1000);
                 return;
             }
 
@@ -84,7 +84,7 @@ function run() {
         }, 3000);
 
         function exit(err) {
-            debug('Exiting in 5 seconds');
+            debug('Exiting in 5 seconds', err);
             clearInterval(updateInterval);
 
             _.delay(() => {
