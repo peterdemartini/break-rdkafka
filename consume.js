@@ -207,13 +207,13 @@ function _consumer(options, callback) {
 
         randomTimeoutId = setTimeout(() => {
             if (!paused) {
-                consumer.pause(assignments);
+                // consumer.pause(assignments);
                 paused = true;
             }
 
             randomTimeoutId = setTimeout(() => {
                 if (paused) {
-                    consumer.resume(assignments);
+                    // consumer.resume(assignments);
                     paused = false;
                 }
                 randomlyPauseAndResume();

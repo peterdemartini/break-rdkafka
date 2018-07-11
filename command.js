@@ -59,7 +59,6 @@ function run() {
         });
 
         const exitNow = _.once(exit);
-        let lastSentCount = -1;
         let lastProcessedCount = -1;
         let deadTimeout;
 
@@ -69,17 +68,16 @@ function run() {
             const c = _.size(_.values(children));
             debug(`UPDATE: processed: ${p}, sent: ${s}, active child processes ${c}`);
 
-            if (s === lastSentCount || p === lastProcessedCount) {
-                if (deadTimeout) return;
+            if (p === lastProcessedCount) {
+                if (deadTimeout == null) return;
                 deadTimeout = setTimeout(() => {
-                    exitNow(new Error(`Processed (${p}) or sent (${s}) has stayed the same for 30 seconds`));
+                    exitNow(new Error(`Processed (${lastProcessedCount}) has stayed the same for 30 seconds`));
                 }, 30 * 1000);
                 return;
             }
 
             clearTimeout(deadTimeout);
             deadTimeout = null;
-            lastSentCount = s;
             lastProcessedCount = p;
         }, 3000);
 
