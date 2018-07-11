@@ -14,7 +14,7 @@ const {
     NUM_CONSUMERS = '5',
     NUM_PRODUCERS = '3',
     NUM_PARTITIONS = '20',
-    MESSAGES_PER_PARTITION = '200000',
+    MESSAGES_PER_PARTITION = '100000',
     DEBUG = 'break-rdkafka',
     DISABLE_PAUSE_AND_RESUME = 'false',
     START_TIMEOUT = '1000',
