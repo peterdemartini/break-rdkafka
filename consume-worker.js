@@ -1,14 +1,11 @@
 'use strict';
 
-const signale = require('signale');
+const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 const consume = require('./consume');
 
-const key = process.env.BREAK_KAFKA_KEY;
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
 const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
-
-const logger = signale.scope(key);
 
 let finished = false;
 let ready = false;
@@ -23,8 +20,8 @@ process.on('message', ({ fn }) => {
     }
 });
 
+debug(`Waiting for ${startTimeout}ms before starting...`);
 
-logger.info(`Waiting for ${startTimeout}ms before starting...`);
 setTimeout(() => {
     ready = true;
     process.send({ fn: 'ready' });
@@ -41,7 +38,11 @@ setTimeout(() => {
 
 
     consume({
-        key, topicName, updateOffsets, processedMessage, shouldFinish, kafkaBrokers
+        topicName,
+        updateOffsets,
+        processedMessage,
+        shouldFinish,
+        kafkaBrokers
     }, (err) => {
         if (err) {
             throw err;

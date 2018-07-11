@@ -3,7 +3,6 @@
 const uuidv4 = require('uuid/v4');
 const produce = require('./produce');
 
-const key = process.env.BREAK_KAFKA_KEY;
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
 
@@ -34,7 +33,10 @@ process.on('message', ({ fn, msg }) => {
 });
 
 produce({
-    key, topicName, sentMessage, startBatch, kafkaBrokers
+    topicName,
+    sentMessage,
+    startBatch,
+    kafkaBrokers
 }, (err) => {
     if (err) {
         throw err;

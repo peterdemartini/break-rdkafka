@@ -2,11 +2,10 @@
 
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
-const signale = require('signale');
+const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 
 function consume(options, callback) {
     const {
-        key,
         topicName,
         updateOffsets,
         shouldFinish,
@@ -14,8 +13,7 @@ function consume(options, callback) {
         kafkaBrokers
     } = options;
 
-    const logger = signale.scope(key);
-    let rebalancing = true; // eslint-disable-line
+    let rebalancing = true;
 
     let assignments = [];
     let processed = 0;
@@ -23,11 +21,11 @@ function consume(options, callback) {
     const consumerDone = _.once(_consumerDone);
 
     if (!topicName) {
-        logger.error('requires a topicName');
+        console.error('requires a topicName'); // eslint-disable-line no-console
         process.exit(1);
     }
 
-    logger.info('initializing...');
+    debug('initializing...');
     const finishInterval = setInterval(() => {
         updateOffsets(offsets);
         if (shouldFinish()) {
@@ -49,7 +47,7 @@ function consume(options, callback) {
                 rebalancing = false;
                 const newPartitions = _.map(assignment, r => _.toInteger(r.partition));
                 assignments = _.union(assignments, newPartitions);
-                logger.info(`assigned ${JSON.stringify(newPartitions)}`);
+                debug(`assigned ${JSON.stringify(newPartitions)}`);
                 _.each(newPartitions, (partition) => {
                     if (!offsets[partition]) {
                         offsets[`${partition}`] = 0;
@@ -59,7 +57,7 @@ function consume(options, callback) {
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 rebalancing = true;
                 const removedPartitions = _.map(assignment, r => _.toInteger(r.partition));
-                logger.info(`unassigned ${JSON.stringify(removedPartitions)}`);
+                debug(`unassigned ${JSON.stringify(removedPartitions)}`);
                 assignments = _.without(assignments, ...removedPartitions);
                 _.each(removedPartitions, (partition) => {
                     delete offsets[`${partition}`];
@@ -67,7 +65,7 @@ function consume(options, callback) {
                 this.unassign(assignment);
             } else {
                 // We had a real error
-                logger.error(err);
+                console.error(err); // eslint-disable-line no-console
             }
         }
     });
@@ -77,19 +75,19 @@ function consume(options, callback) {
     // logging debug messages, if debug is enabled
     consumer.on('event.log', (log) => {
         if (/(fail|error|warn|issue|disconnect|problem)/gi.test(log.message)) {
-            logger.debug(log.message);
+            debug(log.message);
         }
     });
 
     // logging all errors
     consumer.on('event.error', (err) => {
-        logger.error(err);
+        console.error(err); // eslint-disable-line no-console
     });
 
     const numMessages = 1000;
 
     consumer.on('ready', () => {
-        logger.info('ready!');
+        debug('ready!');
 
         consumer.subscribe([topicName]);
         // start consuming messages
@@ -106,6 +104,9 @@ function consume(options, callback) {
         // committing offsets every numMessages
         if (offsets[partition] % (numMessages + 1) === numMessages) {
             updateOffsets(offsets);
+            if (rebalancing) {
+                debug('is rebalancing');
+            }
             consumer.commit(m);
         }
         processed += 1;
@@ -119,16 +120,16 @@ function consume(options, callback) {
     // starting the consumer
     consumer.connect({}, (err) => {
         if (err) {
-            logger.error(err);
+            console.error(err); // eslint-disable-line no-console
         }
-        logger.info('connected');
+        debug('connected');
     });
 
     function _consumerDone(err) {
-        logger.info('done!');
+        debug('done!');
         clearInterval(finishInterval);
         ended = true;
-        logger.info(`offsets: ${JSON.stringify(offsets, null, 2)}`);
+        debug(`offsets: ${JSON.stringify(offsets, null, 2)}`);
         if (consumer.isConnected()) {
             consumer.disconnect();
         }
@@ -136,7 +137,7 @@ function consume(options, callback) {
             callback(err);
             return;
         }
-        logger.success(`processed ${processed}`);
+        debug(`processed ${processed}`);
         callback(null);
     }
 }

@@ -3,24 +3,23 @@
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
 const uuidv4 = require('uuid/v4');
-const signale = require('signale');
+const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 
 function produce(options, callback) {
     const {
-        key,
         topicName,
         sentMessage,
         startBatch,
         kafkaBrokers
     } = options;
 
-    const logger = signale.scope(key);
+
     if (!topicName) {
-        logger.error('requires a topicName');
+        console.error('requires a topicName'); // eslint-disable-line no-console
         process.exit(1);
     }
 
-    logger.info('initializing...');
+    debug('initializing...');
 
     let ended = false;
     const producerDone = _.once(_producerDone);
@@ -37,7 +36,7 @@ function produce(options, callback) {
     // logging debug messages, if debug is enabled
     producer.on('event.log', (log) => {
         if (/(fail|error|warn|issue|disconnect|problem)/gi.test(log.message)) {
-            logger.debug(log.message);
+            debug(log.message);
         }
     });
 
@@ -45,12 +44,12 @@ function produce(options, callback) {
 
     // logging all errors
     producer.on('event.error', (err) => {
-        logger.error(err);
+        console.error(err); // eslint-disable-line no-console
     });
 
     // Wait for the ready event before producing
     producer.on('ready', () => {
-        logger.info('ready!');
+        debug('ready!');
         const sendMessages = () => {
             startBatch((err, messages) => {
                 if (err) {
@@ -76,7 +75,7 @@ function produce(options, callback) {
                         message.key
                     );
                     if (result !== true) {
-                        logger.warn(`produce did not return true, got ${result}`);
+                        debug(`produce did not return true, got ${result}`);
                     }
                     sentMessage(message);
                     sendAfter();
@@ -94,7 +93,7 @@ function produce(options, callback) {
     producer.connect();
 
     function _producerDone(err) {
-        logger.info('done!');
+        debug('done!');
         ended = true;
         if (producer.isConnected()) {
             producer.disconnect();
