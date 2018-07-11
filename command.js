@@ -12,7 +12,8 @@ const {
     NUM_CONSUMERS = '5',
     NUM_PRODUCERS = '2',
     NUM_PARTITIONS = '25',
-    MESSAGES_PER_PARTITION = '100000'
+    MESSAGES_PER_PARTITION = '100000',
+    DEBUG = 'break-rdkafka'
 } = process.env;
 
 const kafkaBrokers = KAFKA_BROKERS;
@@ -122,6 +123,10 @@ function run() {
             }
         };
 
+        const debugToManyMessages = _.throttle((input) => {
+            debug('processed more messages than it should have', input);
+        }, 1000);
+
         const processedMessage = (input) => {
             processed[`${input.partition}`] += 1;
             if (_.sum(_.values(processed)) === totalMessages) {
@@ -129,7 +134,7 @@ function run() {
                 shouldFinishChildren();
             }
             if (_.sum(_.values(processed)) > totalMessages) {
-                debug('processed more messages than it should have', JSON.stringify(input, null, 2));
+                debugToManyMessages(input);
             }
         };
 
@@ -143,7 +148,7 @@ function run() {
                     BREAK_KAFKA_TOPIC_NAME: topicName,
                     BREAK_KAFKA_BROKERS: kafkaBrokers,
                     FORCE_COLOR: '1',
-                    DEBUG: process.env.DEBUG,
+                    DEBUG,
                 },
                 stdio: 'inherit'
             });
@@ -190,7 +195,7 @@ function run() {
                     BREAK_KAFKA_BROKERS: kafkaBrokers,
                     FORCE_COLOR: '1',
                     START_TIMEOUT: i * 5000,
-                    DEBUG: process.env.DEBUG,
+                    DEBUG,
                 },
                 stdio: 'inherit'
             });

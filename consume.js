@@ -47,7 +47,7 @@ function consume(options, callback) {
                 rebalancing = false;
                 const newPartitions = _.map(assignment, r => _.toInteger(r.partition));
                 assignments = _.union(assignments, newPartitions);
-                debug(`assigned ${JSON.stringify(newPartitions)}`);
+                debug('assigned', newPartitions);
                 _.each(newPartitions, (partition) => {
                     if (!offsets[partition]) {
                         offsets[`${partition}`] = 0;
@@ -57,7 +57,7 @@ function consume(options, callback) {
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 rebalancing = true;
                 const removedPartitions = _.map(assignment, r => _.toInteger(r.partition));
-                debug(`unassigned ${JSON.stringify(removedPartitions)}`);
+                debug('unassigned', removedPartitions);
                 assignments = _.without(assignments, ...removedPartitions);
                 _.each(removedPartitions, (partition) => {
                     delete offsets[`${partition}`];
@@ -129,7 +129,7 @@ function consume(options, callback) {
         debug('done!');
         clearInterval(finishInterval);
         ended = true;
-        debug(`offsets: ${JSON.stringify(offsets, null, 2)}`);
+        debug('offsets', offsets);
         if (consumer.isConnected()) {
             consumer.disconnect();
         }
