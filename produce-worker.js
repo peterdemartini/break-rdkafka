@@ -1,6 +1,6 @@
 'use strict';
 
-const uuidv4 = require('uuid/v4');
+const genId = require('./generate-id');
 const produce = require('./produce');
 
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
@@ -11,7 +11,7 @@ const sentMessage = (msg) => {
 };
 
 const startBatch = (callback) => {
-    const requestId = uuidv4();
+    const requestId = genId('batch');
     process.send({ fn: 'getMessageBatch', requestId });
     const onMessage = ({ fn, messages, responseId }) => {
         if (fn !== 'receiveMessageBatch') {

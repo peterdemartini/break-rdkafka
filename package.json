@@ -17,8 +17,8 @@
     "debug": "^3.1.0",
     "kafka-tools": "^1.1.0",
     "lodash": "^4.17.10",
+    "nanoid": "^1.0.7",
     "node-rdkafka": "^2.3.4",
-    "signale": "^1.2.1",
-    "uuid": "^3.3.2"
+    "signale": "^1.2.1"
   }
 }

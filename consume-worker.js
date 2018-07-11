@@ -14,8 +14,6 @@ process.on('message', ({ fn }) => {
     }
 });
 
-process.send({ fn: 'ready' });
-
 const updateOffsets = (offsets) => {
     process.send({ fn: 'updateOffsets', offsets });
 };

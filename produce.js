@@ -2,8 +2,8 @@
 
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
-const uuidv4 = require('uuid/v4');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
+const genId = require('./generate-id');
 
 function produce(options, callback) {
     const {
@@ -67,7 +67,7 @@ function produce(options, callback) {
                     if (ended) {
                         return;
                     }
-                    const value = Buffer.from(uuidv4());
+                    const value = Buffer.from(genId(message.key));
                     const result = producer.produce(
                         topicName,
                         message.partition,
@@ -99,6 +99,7 @@ function produce(options, callback) {
             producer.disconnect();
         }
         if (err) {
+            console.error(err); // eslint-disable-line no-console
             callback(err);
             return;
         }

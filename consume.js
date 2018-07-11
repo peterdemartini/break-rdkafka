@@ -3,6 +3,7 @@
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
+const genId = require('./generate-id');
 
 function consume(options, callback) {
     const {
@@ -15,6 +16,7 @@ function consume(options, callback) {
     } = options;
 
     let rebalancing = true;
+    let randomTimeoutId;
 
     let assignments = [];
     let processed = 0;
@@ -30,13 +32,14 @@ function consume(options, callback) {
     const finishInterval = setInterval(() => {
         updateOffsets(offsets);
         if (shouldFinish()) {
+            debug('consumer was told it should finish');
             consumerDone();
         }
     }, 500);
 
 
     const consumer = new Kafka.KafkaConsumer({
-        'client.id': _.uniqueId('break-kafka-'),
+        'client.id': genId('break-kafka-'),
         debug: 'cgrp,topic',
         'metadata.broker.list': kafkaBrokers,
         'group.id': `${topicName}-group`,
@@ -46,23 +49,20 @@ function consume(options, callback) {
         rebalance_cb(err, assignment) {
             if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
                 rebalancing = false;
-                const newPartitions = _.map(assignment, r => _.toInteger(r.partition));
-                assignments = _.union(assignments, newPartitions);
-                debug('assigned', newPartitions);
-                _.each(newPartitions, (partition) => {
-                    if (!offsets[partition]) {
-                        offsets[`${partition}`] = 0;
-                    }
-                });
+                this.resume(assignment);
+
+                debug('assignment', assignment);
+                assignments = _.unionBy(assignments, ['partition', 'topic']);
+
                 this.assign(assignment);
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 rebalancing = true;
-                const removedPartitions = _.map(assignment, r => _.toInteger(r.partition));
-                debug('unassigned', removedPartitions);
-                assignments = _.without(assignments, ...removedPartitions);
-                _.each(removedPartitions, (partition) => {
-                    delete offsets[`${partition}`];
-                });
+
+                this.pause(assignment);
+
+                debug('unassigned', assignment);
+                assignments = _.without(assignments, assignment);
+
                 this.unassign(assignment);
             } else {
                 // We had a real error
@@ -98,6 +98,8 @@ function consume(options, callback) {
             // start consuming messages
             consumer.consume();
         }, startTimeout);
+
+        randomlyPauseAndResume();
     });
 
     consumer.on('data', (m) => {
@@ -120,6 +122,7 @@ function consume(options, callback) {
     });
 
     consumer.on('disconnected', () => {
+        debug('consumer disconnected');
         consumerDone(new Error('Consumer Disconnected'));
     });
 
@@ -127,12 +130,14 @@ function consume(options, callback) {
     consumer.connect({}, (err) => {
         if (err) {
             console.error(err); // eslint-disable-line no-console
+            return;
         }
         debug('connected');
     });
 
     function _consumerDone(err) {
         debug('done!');
+        clearTimeout(randomTimeoutId);
         clearInterval(finishInterval);
         ended = true;
         debug('offsets', offsets);
@@ -140,11 +145,32 @@ function consume(options, callback) {
             consumer.disconnect();
         }
         if (err) {
+            console.error(err); // eslint-disable-line no-console
             callback(err);
             return;
         }
         debug(`processed ${processed}`);
         callback(null);
+    }
+
+    function randomlyPauseAndResume() {
+        if (_.isEmpty(assignments)) {
+            randomTimeoutId = setTimeout(() => {
+                randomlyPauseAndResume();
+            }, 1000);
+            return;
+        }
+        const timeout = _.random(1000, 10000);
+        debug(`will pause and resume in ${timeout}ms`);
+        randomTimeoutId = setTimeout(() => {
+            const resumeTimeout = _.random(100, 3000);
+            debug(`pausing assignedPartitions, will resume in ${resumeTimeout}ms`, assignments);
+            consumer.pause(assignments);
+            randomTimeoutId = setTimeout(() => {
+                consumer.resume(assignments);
+                randomlyPauseAndResume();
+            }, resumeTimeout);
+        }, timeout);
     }
 }
 

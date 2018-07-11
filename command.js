@@ -2,17 +2,18 @@
 
 const _ = require('lodash');
 const { kafka } = require('kafka-tools');
-const uuidv4 = require('uuid/v4');
 const signale = require('signale');
 const { fork } = require('child_process');
 const debug = require('debug')('break-rdkafka:command');
+
+const genId = require('./generate-id');
 
 const {
     KAFKA_BROKERS = 'localhost:9092,localhost:9093',
     NUM_CONSUMERS = '5',
     NUM_PRODUCERS = '2',
-    NUM_PARTITIONS = '25',
-    MESSAGES_PER_PARTITION = '100000',
+    NUM_PARTITIONS = '20',
+    MESSAGES_PER_PARTITION = '200000',
     DEBUG = 'break-rdkafka'
 } = process.env;
 
@@ -23,16 +24,25 @@ const numPartitions = _.toSafeInteger(NUM_PARTITIONS);
 const messagesPerPartition = _.toSafeInteger(MESSAGES_PER_PARTITION);
 
 function run() {
-    const topicName = uuidv4();
+    const topicName = genId('break-kafka');
 
-    const messages = makeMessages(messagesPerPartition, numPartitions);
+    signale.info(`initializing...
+        topic: ${topicName}
+        numPartitions: ${numPartitions}
+        totalMessages: ${messagesPerPartition * numPartitions}
+        consumers: ${numConsumers}
+        producers: ${numProducers}
+    `);
 
+    const messages = makeMessages();
     const totalMessages = _.size(messages);
-    const client = new kafka.Client('localhost:2181', _.uniqueId('break-kafka-'), {
+
+    const client = new kafka.Client('localhost:2181', genId('break-kafka-'), {
         sessionTimeout: 5000,
         spinDelay: 500,
         retries: 0
     });
+
     client.zk.createTopic(topicName, numPartitions, 1, {}, (createTopicErr) => {
         if (createTopicErr) {
             signale.fatal(createTopicErr);
@@ -202,10 +212,12 @@ function run() {
 
             child.on('close', (code) => {
                 delete children[key];
+
                 if (code > 0) {
                     exitNow(new Error(`${key} died with an exit code of ${code}`));
                     return;
                 }
+
                 exitIfNeeded();
                 signale.timeEnd(key);
                 signale.success(`${key} done!`);
@@ -222,30 +234,22 @@ function run() {
                 if (data.fn === 'updateOffsets') {
                     finalOffsets[key] = data.offsets;
                 }
-                if (data.fn === 'ready') {
-                    debug('worker ready');
-                }
             });
+
             children[key] = child;
         });
-
-
-        signale.info(`initializing...
-            topic: ${topicName}
-            numPartitions: ${numPartitions}
-            totalMessages: ${totalMessages}
-            consumers: ${numConsumers}
-            producers: ${numProducers}
-        `);
     });
-}
 
-function makeMessages(count, partitions) {
-    const perPartition = () => _.times(partitions, partition => ({
-        partition,
-        key: uuidv4()
-    }));
-    return _.flatten(_.times(count, perPartition));
+    function makeMessages() {
+        signale.time('making messages');
+        const perPartition = partition => _.times(messagesPerPartition, () => ({
+            partition,
+            key: genId('', 15)
+        }));
+        const results = _.flatten(_.times(numPartitions, perPartition));
+        signale.timeEnd('making messages');
+        return results;
+    }
 }
 
 run();
