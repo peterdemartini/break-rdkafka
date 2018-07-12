@@ -1,11 +1,14 @@
 'use strict';
 
-const Kafka = require('node-rdkafka');
 const _ = require('lodash');
+const fs = require('fs');
+const path = require('path');
+const Kafka = require('node-rdkafka');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 const exitHandler = require('./exit-handler');
 const genId = require('./generate-id');
 
+// const breakKafka = process.env.BREAK_KAFKA === 'true';
 const useCommitAsync = process.env.USE_COMMIT_ASYNC === 'true';
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
@@ -13,6 +16,13 @@ const disablePauseAndResume = process.env.DISABLE_PAUSE_AND_RESUME === 'true';
 const useConsumerPauseAndResume = process.env.USE_CONSUMER_PAUSE_AND_RESUME === 'true';
 const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
 const batchSize = parseInt(process.env.BATCH_SIZE, 10);
+
+const statsFile = path.join(__dirname, 'stats', `${process.env.BREAK_KAFKA_KEY}.json`);
+try {
+    fs.unlinkSync(statsFile);
+} catch (err) {
+    // this is okay
+}
 
 function _consumer({
     updateAssignments,
@@ -26,22 +36,21 @@ function _consumer({
     let assignments = [];
     let consumeTimeout;
     let processed = 0;
-    const consumerDone = _.once(_consumerDone);
-
-    if (!topicName) {
-        console.error('requires a topicName'); // eslint-disable-line no-console
-        process.exit(1);
-    }
+    let ended = false;
+    let processing = false;
 
     function simpleTopics(input) {
         let topics = input;
         if (_.isPlainObject(input)) {
             topics = _.values(input);
         }
-        return _.map(topics, ({ partition, offset = 'N/A' }) => {
-            const message = `P: ${partition}, O: ${offset}`;
+        const formatLong = _.size(topics) > 3;
+        const sep = formatLong ? '\n - ' : '; ';
+        const prefix = formatLong ? sep : '';
+        return prefix + _.map(topics, ({ partition, offset = 'N/A' }) => {
+            const message = `partition: ${partition}, offset: ${offset}`;
             return message;
-        }).join(', ');
+        }).join(sep);
     }
 
     debug('initializing...');
@@ -51,12 +60,15 @@ function _consumer({
 
     const consumer = new Kafka.KafkaConsumer({
         'client.id': genId('break-kafka-'),
-        debug: 'cgrp,topic',
+        debug: 'consumer,cgrp,topic,fetch',
+        // 'session.timeout.ms': breakKafka ? 10000 : 1000,
+        'fetch.wait.max.ms': 1000,
         'metadata.broker.list': kafkaBrokers,
         'group.id': `${topicName}-group`,
         'enable.auto.commit': false,
         'enable.auto.offset.store': false,
         'auto.offset.reset': 'smallest',
+        'statistics.interval.ms': 5000,
         offset_commit_cb(err, topicPartitions) {
             if (err) {
                 // There was an error committing
@@ -89,12 +101,10 @@ function _consumer({
         }
     });
 
-    let ended = false;
-
     // logging debug messages, if debug is enabled
     consumer.on('event.log', (log) => {
         if (/(fail|error|warn|issue|disconnect|problem)/gi.test(log.message)) {
-            debug(log.message);
+            debug('DEBUG', log.message);
         }
     });
 
@@ -102,6 +112,22 @@ function _consumer({
     consumer.on('event.error', (err) => {
         reportError(err);
     });
+
+    consumer.on('event.throttle', (err) => {
+        debug(err);
+        reportError(err);
+    });
+
+    consumer.on('event.stats', ({ message }) => {
+        try {
+            const stats = JSON.parse(message);
+            stats.COLLECTED_AT = new Date().toString();
+            fs.writeFileSync(statsFile, JSON.stringify(stats, null, 2));
+        } catch (err) {
+            reportError(err);
+        }
+    });
+
 
     consumer.on('ready', () => {
         debug('ready!');
@@ -118,6 +144,7 @@ function _consumer({
     });
 
     function consume() {
+        processing = false;
         clearTimeout(consumeTimeout);
         if (ended) {
             return;
@@ -127,7 +154,7 @@ function _consumer({
                 consume();
                 return;
             }
-            consumer.setDefaultConsumeTimeout(batchSize);
+            processing = true;
             consumer.consume(batchSize, (err, messages) => {
                 if (err) {
                     reportError(err);
@@ -141,8 +168,9 @@ function _consumer({
                 }
 
                 const offsets = {};
+
                 _.forEach(messages, (message) => {
-                    const { offset, partition, topic } = message;
+                    const { offset, partition } = message;
                     assignments = _.map(assignments, (assignment) => {
                         if (assignment.partition === partition) {
                             assignment.offset = offset;
@@ -151,7 +179,7 @@ function _consumer({
                     });
                     const current = _.get(offsets, [partition, 'offset'], 0);
                     if (offset > current) {
-                        _.set(offsets, partition, { offset, partition, topic });
+                        _.set(offsets, partition, message);
                     }
                     processed += 1;
                 });
@@ -160,20 +188,31 @@ function _consumer({
                     debug('WARNING: about to commit when paused or rebalancing');
                 }
 
-                if (!useCommitAsync) {
-                    debug('committing sync...', simpleTopics(offsets));
-                }
-
-                _.forEach(_.values(offsets), (message) => {
+                _.forEach(_.values(offsets), ({ offset: _offset, topic, partition }) => {
+                    const offset = _offset + 1;
+                    assignments = _.map(assignments, (assigned) => {
+                        if (assigned === partition) {
+                            return assigned.offsets + 1;
+                        }
+                        return assigned;
+                    });
                     if (useCommitAsync) {
-                        consumer.commit(message);
+                        consumer.commit({
+                            offset,
+                            partition,
+                            topic
+                        });
                     } else {
-                        consumer.commitSync(message);
+                        debug(`committing sync... partition: ${partition} offset: ${offset}`);
+                        consumer.commitSync({
+                            offset,
+                            partition,
+                            topic
+                        });
+                        debug('committing took');
                     }
                 });
-                if (!useCommitAsync) {
-                    debug('committing took');
-                }
+
                 consumedMessages(messages);
                 consume();
             });
@@ -182,7 +221,7 @@ function _consumer({
 
 
     consumer.on('disconnected', () => {
-        debug('WARNING: consumer disconnected');
+        if (ended) return;
         consumerDone(new Error('Consumer Disconnected'));
     });
 
@@ -195,21 +234,48 @@ function _consumer({
         debug('connected');
     });
 
-    function _consumerDone(err, cb = callback) {
-        debug('done!');
+    function consumerDone(err, cb = callback) {
+        if (ended && err) {
+            reportError(err);
+            return;
+        }
+        let timeout;
+        const done = () => {
+            debug('done!');
+            if (err) {
+                console.error(err); // eslint-disable-line no-console
+                cb(err);
+                return;
+            }
+            cb();
+        };
+
         clearTimeout(consumeTimeout);
         clearTimeout(randomTimeoutId);
         clearInterval(finishInterval);
+
         ended = true;
         debug('assignments', simpleTopics(assignments));
-        if (consumer.isConnected()) {
-            consumer.disconnect();
-        }
         if (err) {
             console.error(err); // eslint-disable-line no-console
             cb(err);
             return;
         }
+        function checkFinished() {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                if (consumer.isConnected()) {
+                    checkFinished();
+                    return;
+                }
+                if (processing) {
+                    checkFinished();
+                    return;
+                }
+                done();
+            }, 100);
+        }
+        checkFinished();
         debug(`processed ${processed}`);
         callback(null);
     }
@@ -264,7 +330,7 @@ function _consumer({
     }
 
     exitHandler(() => new Promise((resolve, reject) => {
-        _consumerDone(null, (err) => {
+        consumerDone(null, (err) => {
             if (err) {
                 reject(err);
             } else {

@@ -4,6 +4,7 @@ const _ = require('lodash');
 const { kafka } = require('kafka-tools');
 const signale = require('signale');
 const { fork } = require('child_process');
+const stringifyObject = require('stringify-object');
 const debug = require('debug')('break-rdkafka:command');
 const exitHandler = require('./exit-handler');
 
@@ -13,10 +14,10 @@ const breakKafka = process.env.BREAK_KAFKA === 'true';
 
 const {
     KAFKA_BROKERS = 'localhost:9092,localhost:9093',
-    NUM_CONSUMERS = '4',
+    NUM_CONSUMERS = '5',
     NUM_PRODUCERS = '3',
-    NUM_PARTITIONS = '16',
-    MESSAGES_PER_PARTITION = '40000',
+    NUM_PARTITIONS = '15',
+    MESSAGES_PER_PARTITION = '30000',
     DEBUG = 'break-rdkafka',
     DISABLE_PAUSE_AND_RESUME = breakKafka ? 'false' : 'true',
     USE_CONSUMER_PAUSE_AND_RESUME = breakKafka ? 'false' : 'true',
@@ -82,12 +83,19 @@ function run() {
         let consumeStuckCount = 0;
         let produceStuckCount = 0;
         let exitTimeout = null;
-        let lastErrors = [];
         const reportedErrors = [];
 
+        function getConsumedCount() {
+            return _.sum(_.values(consumed));
+        }
+
+        function getProducedCount() {
+            return _.sum(_.values(produced));
+        }
+
         const updateInterval = setInterval(() => {
-            const consumedCount = _.sum(_.values(consumed));
-            const producedCount = _.sum(_.values(produced));
+            const consumedCount = getConsumedCount();
+            const producedCount = getProducedCount();
             const childrenCount = _.size(_.values(children));
             const updates = [];
 
@@ -111,24 +119,31 @@ function run() {
 
             updates.push(`active child processes ${childrenCount}`);
 
-            const newErrors = _.difference(reportedErrors, lastErrors);
-            const errCount = _.size(reportedErrors);
-            updates.push(!errCount ? 'no reported errors' : `${errCount} errors have been reported`);
-            updates.push(...newErrors);
-
-            debug(`UPDATES:\n - ${updates.join('\n - ')}\n`);
-
-            if (consumedCount > 0 && consumedCount < totalMessages && consumedCount && consumedCount === lastConsumedCount) {
+            if (consumedCount > 0 && consumedCount < totalMessages
+                && consumedCount && consumedCount === lastConsumedCount) {
+                reportedErrors.push(`WARNING: consumed count ${producedCount} stayed the same`);
                 consumeStuckCount += 1;
             } else {
                 consumeStuckCount = 0;
             }
 
-            if (producedCount > 0 && producedCount < totalMessages && producedCount === lastProducedCount) {
+            if (producedCount > 0 && producedCount < totalMessages
+                && producedCount === lastProducedCount) {
+                reportedErrors.push(`WARNING: produced count ${producedCount} stayed the same`);
                 produceStuckCount += 1;
             } else {
                 produceStuckCount = 0;
             }
+
+            const errCount = _.size(reportedErrors);
+            if (!errCount) {
+                updates.push('no reported errors');
+            } else {
+                updates.push(...reportedErrors);
+            }
+
+
+            debug(`UPDATES:\n - ${updates.join('\n - ')}\n`);
 
             if (consumeStuckCount === 3) {
                 exit(new Error(`Consume count (${consumedCount}) has stayed the same for 30 seconds`));
@@ -138,19 +153,21 @@ function run() {
                 exit(new Error(`Produce count (${producedCount}) has stayed the same for 30 seconds`));
             }
 
-            lastErrors = reportedErrors;
             lastConsumedCount = consumedCount;
             lastProducedCount = producedCount;
         }, 10 * 1000);
 
         function exit(err, signal, done) {
-            if (err) {
-                signale.error('Exiting due to error: ', err); // eslint-disable-line
-            }
-
             if (exitTimeout != null) {
+                if (err) {
+                    reportedErrors.push(err.stack ? err.stack : err.toString());
+                }
                 debug('already exiting...');
                 return;
+            }
+
+            if (err) {
+                signale.error('Will exit because to error: ', err);
             }
 
             clearInterval(updateInterval);
@@ -166,10 +183,10 @@ function run() {
                             signale.error(dErr);
                         }
                         debug(`DELETED TOPIC: ${topicName}`);
-                        debug('assignments', assignments);
-                        debug('produced', produced);
-                        debug('consumed', consumed);
-                        debug('reportedErrors', reportedErrors);
+                        debug('assignments', stringifyObject(assignments));
+                        debug('produced', stringifyObject(produced));
+                        debug('consumed', stringifyObject(consumed));
+                        debug('reportedErrors', stringifyObject(reportedErrors));
 
                         if (err) {
                             signale.fatal(err);
@@ -224,7 +241,7 @@ function run() {
         }
 
         function exitIfNeeded() {
-            if (_.sum(_.values(produced)) > totalMessages) {
+            if (getProducedCount() > totalMessages) {
                 exit();
             }
             if (_.isEmpty(children)) {
@@ -232,7 +249,7 @@ function run() {
             }
         }
 
-        const debugToManyMessages = _.throttle((count) => {
+        const debugToManyMessages = _.debounce((count) => {
             debug(`consumed more messages than it should have (${count})`);
         }, 1000);
 
@@ -240,7 +257,7 @@ function run() {
             _.forEach(input, (message) => {
                 consumed[`${message.partition}`] += 1;
             });
-            const count = _.sum(_.values(consumed));
+            const count = getConsumedCount();
             if (count === totalMessages) {
                 signale.success(`consumed all of ${totalMessages} messages`);
                 debug('consumed result', consumed);
@@ -255,7 +272,7 @@ function run() {
             _.forEach(input, (message) => {
                 produced[`${message.partition}`] += 1;
             });
-            const count = _.sum(_.values(produced));
+            const count = getProducedCount();
             if (count === totalMessages) {
                 signale.success(`produced all of ${totalMessages} messages`);
                 debug('produced result', produced);
@@ -286,9 +303,11 @@ function run() {
                 delete children[key];
                 clearTimeout(heartbeatTimeout);
 
-                const message = `WARNING: child exited with status code ${code}`;
-                debug(message);
-                reportedErrors.push(message);
+                if (exitTimeout == null && !_.isEmpty(messages)) {
+                    const message = `WARNING: child ${key} exited with status code ${code}`;
+                    debug(message);
+                    reportedErrors.push(message);
+                }
 
                 if (code !== 0) {
                     exit(new Error(`${key} died with an exit code of ${code}`));
@@ -310,8 +329,15 @@ function run() {
                 }
 
                 if (data.fn === 'getMessageBatch') {
-                    const randomStart = _.random(0, _.size(messages));
-                    const batch = messages.splice(randomStart, 5000);
+                    const remaining = _.size(messages);
+                    if (!remaining) {
+                        debug(`no more messages to use, sending SIGTERM to ${key}`);
+                        child.kill('SIGTERM');
+                        return;
+                    }
+                    const count = remaining > batchSize ? batchSize : remaining;
+                    const randomStart = _.random(0, remaining);
+                    const batch = messages.splice(randomStart, count);
                     const responseId = data.requestId;
                     child.send({ fn: 'receiveMessageBatch', messages: batch, responseId });
                 }
@@ -319,17 +345,23 @@ function run() {
                 if (data.fn === 'heartbeat') {
                     clearTimeout(heartbeatTimeout);
                     heartbeatTimeout = setTimeout(() => {
-                        const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
-                        debug(message);
-                        reportedErrors.push(message);
-                        child.kill('SIGKILL');
+                        if (exitTimeout == null) {
+                            const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
+                            debug(message);
+                            reportedErrors.push(message);
+                        }
+                        heartbeatTimeout = setTimeout(() => {
+                            child.kill('SIGKILL');
+                        }, data.validFor);
                     }, data.validFor);
                 }
 
                 if (data.fn === 'reportError') {
-                    const message = `ERROR: ${key} reported error ${data.error}`;
-                    debug(message);
-                    reportedErrors.push(message);
+                    if (exitTimeout == null) {
+                        const message = `ERROR: ${key} reported error ${data.error}`;
+                        debug(message);
+                        reportedErrors.push(message);
+                    }
                 }
             });
 
@@ -360,9 +392,11 @@ function run() {
                 delete children[key];
                 clearTimeout(heartbeatTimeout);
 
-                const message = `WARNING: child exited with status code ${code}`;
-                debug(message);
-                reportedErrors.push(message);
+                if (exitTimeout == null) {
+                    const message = `WARNING: child ${key} exited with status code ${code}`;
+                    debug(message);
+                    reportedErrors.push(message);
+                }
 
                 if (code > 0) {
                     exit(new Error(`${key} died with an exit code of ${code}`));
@@ -388,17 +422,21 @@ function run() {
                 if (data.fn === 'heartbeat') {
                     clearTimeout(heartbeatTimeout);
                     heartbeatTimeout = setTimeout(() => {
-                        const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
-                        debug(message);
-                        reportedErrors.push(message);
+                        if (exitTimeout == null) {
+                            const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
+                            debug(message);
+                            reportedErrors.push(message);
+                        }
                         child.kill('SIGKILL');
                     }, data.validFor);
                 }
 
                 if (data.fn === 'reportError') {
-                    const message = `ERROR: ${key} reported error ${data.error}`;
-                    debug(message);
-                    reportedErrors.push(message);
+                    if (exitTimeout == null) {
+                        const message = `ERROR: ${key} reported error ${data.error}`;
+                        debug(message);
+                        reportedErrors.push(message);
+                    }
                 }
             });
 
@@ -420,10 +458,7 @@ function run() {
         signale.time('making messages');
         const results = [];
         _.times(numPartitions, (partition) => {
-            const partionMessages = _.times(messagesPerPartition, () => {
-                const key = genId(null, 15);
-                return { key, partition };
-            });
+            const partionMessages = _.times(messagesPerPartition, () => ({ partition }));
             results.push(...partionMessages);
         });
         signale.timeEnd('making messages');

@@ -1,36 +1,41 @@
 'use strict';
 
-const Kafka = require('node-rdkafka');
 const _ = require('lodash');
+const fs = require('fs');
+const path = require('path');
+const Kafka = require('node-rdkafka');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
 const exitHandler = require('./exit-handler');
 const genId = require('./generate-id');
+
+const messageObject = fs.readFileSync('message.json');
 
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
 const batchSize = parseInt(process.env.BATCH_SIZE, 10);
 
-if (!topicName) {
-    console.error('requires a topicName'); // eslint-disable-line no-console
-    process.exit(1);
+const statsFile = path.join(__dirname, 'stats', `${process.env.BREAK_KAFKA_KEY}.json`);
+try {
+    fs.unlinkSync(statsFile);
+} catch (err) {
+    // this is okay
 }
 
 function produce({ producedMessages, startBatch, reportError }, callback) {
     debug('initializing...');
 
     let ended = false;
-    const producerDone = _.once(_producerDone);
+    let processing = false;
 
     const producer = new Kafka.Producer({
         'client.id': genId('break-kafka-'),
-        'compression.codec': 'gzip',
-        debug: 'broker,topic',
+        debug: 'broker,topic,msg',
         'queue.buffering.max.messages': batchSize * 5,
         'queue.buffering.max.ms': 10 * 1000,
-        'topic.metadata.refresh.interval.ms': 10000,
         'batch.num.messages': batchSize,
         'metadata.broker.list': kafkaBrokers,
-        'log.connection.close': false
+        'log.connection.close': true,
+        'statistics.interval.ms': 5000,
     });
 
     // logging debug messages, if debug is enabled
@@ -42,49 +47,75 @@ function produce({ producedMessages, startBatch, reportError }, callback) {
 
     producer.setPollInterval(100);
 
-    // logging all errors
     producer.on('event.error', (err) => {
         reportError(err);
+    });
+
+    producer.on('event.throttle', (err) => {
+        reportError(err);
+    });
+
+    producer.on('event.stats', ({ message }) => {
+        try {
+            const stats = JSON.parse(message);
+            stats.COLLECTED_AT = new Date().toString();
+            fs.writeFileSync(statsFile, JSON.stringify(stats, null, 2));
+        } catch (err) {
+            reportError(err);
+        }
     });
 
     // Wait for the ready event before producing
     producer.on('ready', () => {
         debug('ready!');
         const processBatch = () => {
+            if (ended) return;
+            processing = true;
             startBatch((err, messages) => {
                 if (err) {
-                    producerDone(err);
+                    reportError(err);
+                    processBatch();
                     return;
                 }
                 if (_.isEmpty(messages)) {
+                    debug('got empty messages, ending...');
                     producerDone();
                     return;
                 }
+
                 const count = _.size(messages);
+
                 const sendAfter = _.after(count, () => {
                     producer.flush(60000, (flusherr) => {
                         if (flusherr) reportError(flusherr);
                         producedMessages(messages);
                         setImmediate(() => {
+                            processing = false;
                             processBatch();
                         });
                     });
                 });
+
                 _.forEach(messages, (message) => {
                     if (ended) {
                         return;
                     }
-                    const value = Buffer.from(message.key);
-                    const result = producer.produce(
-                        topicName,
-                        message.partition,
-                        value,
-                        null,
-                        Date.now()
-                    );
-                    if (result !== true) {
-                        debug(`produce did not return true, got ${result}`);
+
+                    try {
+                        const result = producer.produce(
+                            topicName,
+                            message.partition,
+                            messageObject,
+                            null,
+                            Date.now()
+                        );
+                        if (result !== true) {
+                            reportError(new Error(`produce did not return true, got ${result}`));
+                        }
+                    } catch (produceErr) {
+                        reportError(produceErr);
                     }
+
                     sendAfter();
                 });
             });
@@ -93,28 +124,53 @@ function produce({ producedMessages, startBatch, reportError }, callback) {
     });
 
     producer.on('disconnected', () => {
+        if (ended) return;
         producerDone(new Error('Producer Disconnected'));
     });
 
     // starting the producer
     producer.connect();
 
-    function _producerDone(err, cb = callback) {
-        debug('done!');
-        ended = true;
-        if (producer.isConnected()) {
-            producer.disconnect();
-        }
-        if (err) {
-            console.error(err); // eslint-disable-line no-console
-            cb(err);
+    function producerDone(err, cb = callback) {
+        if (ended && err) {
+            reportError(err);
             return;
         }
-        cb();
+        let timeout;
+        const done = () => {
+            debug('done!');
+            if (err) {
+                console.error(err); // eslint-disable-line no-console
+                cb(err);
+                return;
+            }
+            cb();
+        };
+        ended = true;
+
+        function checkFinished() {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                if (producer.isConnected()) {
+                    checkFinished();
+                    return;
+                }
+                if (processing) {
+                    checkFinished();
+                    return;
+                }
+                done();
+            }, 100);
+        }
+
+        producer.flush(60000, (flusherr) => {
+            if (flusherr) console.error(flusherr); // eslint-disable-line no-console
+            checkFinished();
+        });
     }
 
     exitHandler(() => new Promise((resolve, reject) => {
-        _producerDone(null, (err) => {
+        producerDone(null, (err) => {
             if (err) {
                 reject(err);
             } else {

@@ -21,6 +21,7 @@
     "lodash": "^4.17.10",
     "nanoid": "^1.0.7",
     "node-rdkafka": "^2.3.4",
-    "signale": "^1.2.1"
+    "signale": "^1.2.1",
+    "stringify-object": "^3.2.2"
   }
 }
