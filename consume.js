@@ -1,15 +1,16 @@
 'use strict';
 
-const sigtermHandler = require('sigterm-handler');
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
+const exitHandler = require('./exit-handler');
 const genId = require('./generate-id');
 
 const useCommitAsync = process.env.USE_COMMIT_ASYNC === 'true';
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
 const disablePauseAndResume = process.env.DISABLE_PAUSE_AND_RESUME === 'true';
+const useConsumerPauseAndResume = process.env.USE_CONSUMER_PAUSE_AND_RESUME === 'true';
 const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
 const batchSize = parseInt(process.env.BATCH_SIZE, 10);
 
@@ -92,7 +93,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
             debug('Starting...');
             // start consuming messages
             consume();
-            randomlyPauseAndResume();
+            if (!disablePauseAndResume) randomlyPauseAndResume();
         }, startTimeout);
     });
 
@@ -210,7 +211,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
 
         const pauseTimeout = _.random(1000, 30 * 1000);
         const resumeTimeout = _.random(1000, 15 * 1000);
-        debug(`CHAOS: will pause in ${pauseTimeout}ms and resume in ${resumeTimeout}ms`);
+        debug(`CHOAS: will pause in ${pauseTimeout}ms and resume in ${resumeTimeout}ms`);
 
         randomTimeoutId = setTimeout(() => {
             pause();
@@ -223,28 +224,27 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
     }
 
     function pause() {
+        if (disablePauseAndResume) return;
         if (paused) return;
-        if (!disablePauseAndResume) {
-            debug('PAUSING!');
+        debug('PAUSING!');
+        if (useConsumerPauseAndResume) {
             consumer.pause(assignments);
-        } else {
-            debug('Pausing is actually disabled');
         }
         paused = true;
     }
 
     function resume() {
-        if (paused) return;
-        if (!disablePauseAndResume) {
-            debug('RESUMING!');
+        if (disablePauseAndResume) return;
+        if (!paused) return;
+        debug('RESUMING!');
+        if (useConsumerPauseAndResume) {
             consumer.resume(assignments);
-        } else {
-            debug('Resuming is actually disabled');
         }
         paused = false;
     }
 
-    sigtermHandler(() => new Promise((resolve, reject) => {
+    exitHandler(signal => new Promise((resolve, reject) => {
+        debug(`caught ${signal} handler`);
         _consumerDone(null, (err) => {
             if (err) {
                 reject(err);

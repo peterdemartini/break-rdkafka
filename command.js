@@ -1,25 +1,28 @@
 'use strict';
 
-const sigtermHandler = require('sigterm-handler');
 const _ = require('lodash');
 const { kafka } = require('kafka-tools');
 const signale = require('signale');
 const { fork } = require('child_process');
 const debug = require('debug')('break-rdkafka:command');
+const exitHandler = require('./exit-handler');
 
 const genId = require('./generate-id');
 
+const breakKafka = process.env.BREAK_KAFKA === 'true';
+
 const {
     KAFKA_BROKERS = 'localhost:9092,localhost:9093',
-    NUM_CONSUMERS = '5',
+    NUM_CONSUMERS = '4',
     NUM_PRODUCERS = '3',
-    NUM_PARTITIONS = '20',
+    NUM_PARTITIONS = '16',
     MESSAGES_PER_PARTITION = '100000',
     DEBUG = 'break-rdkafka',
-    DISABLE_PAUSE_AND_RESUME = 'false',
-    START_TIMEOUT = '1000',
-    USE_COMMIT_ASYNC = 'false',
-    BATCH_SIZE = '5000'
+    DISABLE_PAUSE_AND_RESUME = breakKafka ? 'false' : 'true',
+    USE_CONSUMER_PAUSE_AND_RESUME = 'false',
+    START_TIMEOUT = breakKafka ? '5000' : '1000',
+    USE_COMMIT_ASYNC = breakKafka ? 'false' : 'true',
+    BATCH_SIZE = '10000',
 } = process.env;
 
 const kafkaBrokers = KAFKA_BROKERS;
@@ -33,6 +36,10 @@ const batchSize = _.toSafeInteger(BATCH_SIZE);
 function run() {
     const topicName = genId('break-kafka');
 
+    if (breakKafka) {
+        debug('WARNING: CONFIGURED TO BREAK KAFKA');
+    }
+
     debug('initializing...', {
         topicName,
         numPartitions,
@@ -43,7 +50,7 @@ function run() {
         startTimeout,
         DISABLE_PAUSE_AND_RESUME,
         USE_COMMIT_ASYNC,
-        BATCH_SIZE
+        USE_CONSUMER_PAUSE_AND_RESUME,
     });
 
     const messages = makeMessages();
@@ -70,58 +77,79 @@ function run() {
             produced[`${par}`] = 0;
         });
 
-        const exitNow = _.once(exit);
         let lastConsumedCount = -1;
         let lastProducedCount = -1;
-        let deadTimeout = null;
+        let consumeStuckCount = 0;
+        let produceStuckCount = 0;
+        let exitTimeout = null;
 
         const updateInterval = setInterval(() => {
             const consumedCount = _.sum(_.values(consumed));
             const producedCount = _.sum(_.values(produced));
             const childrenCount = _.size(_.values(children));
+            const updates = [];
 
             if (producedCount <= 0) {
-                debug('UPDATE: waiting for messages to be produced...');
-            } else if (producedCount > totalMessages) {
-                debug(`UPDATE: all ${producedCount} messages produced`);
+                updates.push('waiting for messages to be produced...');
+            } else if (producedCount >= totalMessages) {
+                updates.push(`all ${producedCount} messages produced`);
             } else {
-                debug(`UPDATE: produced ${producedCount - lastProducedCount} more messages`);
+                updates.push(`produced ${producedCount - lastProducedCount} more messages`);
             }
 
             if (consumedCount <= 0) {
-                debug('UPDATE: waiting for messages to be consumed...');
-            } else if (consumedCount > totalMessages) {
-                debug(`UPDATE: all ${consumedCount} messages consumed`);
+                updates.push('waiting for messages to be consumed...');
+            } else if (consumedCount >= totalMessages) {
+                updates.push(`all ${consumedCount} messages consumed`);
             } else {
-                debug(`UPDATE: consumed ${consumedCount - lastConsumedCount} more messages`);
+                updates.push(`consumed ${consumedCount - lastConsumedCount} more messages`);
             }
 
-            debug(`UPDATE: active child processes ${childrenCount}`);
+            updates.push(`active child processes ${childrenCount}`);
+            debug(`UPDATES:\n - ${updates.join('\n - ')}\n`);
 
-            if (consumedCount - lastConsumedCount === 0) {
-                if (deadTimeout != null) return;
-                debug(`WARNING: Consume count (${consumedCount}) has stayed the same, will exit in 30 seconds if it doesn't changed`);
-                deadTimeout = setTimeout(() => {
-                    exitNow(new Error(`Consume count (${lastConsumedCount}) has stayed the same for 30 seconds`));
-                }, 15 * 1000);
-                return;
+            if (consumedCount && consumedCount === lastConsumedCount) {
+                consumeStuckCount += 1;
+            } else {
+                consumeStuckCount = 0;
             }
 
-            clearTimeout(deadTimeout);
-            deadTimeout = null;
+            if (producedCount && producedCount === lastProducedCount) {
+                produceStuckCount += 1;
+            } else {
+                produceStuckCount = 0;
+            }
+
+            if (consumeStuckCount === 6) {
+                exit(new Error(`Consume count (${lastConsumedCount}) has stayed the same for 30 seconds`));
+            }
+
+            if (produceStuckCount === 6) {
+                exit(new Error(`Produce count (${produceStuckCount}) has stayed the same for 30 seconds`));
+            }
+
             lastConsumedCount = consumedCount;
             lastProducedCount = producedCount;
         }, 5000);
 
         function exit(err, done) {
-            debug('Exiting in 5 seconds', err);
+            if (err) {
+                signale.error('Exiting due to error: ', err); // eslint-disable-line
+            }
+            debug('Exiting in 5 seconds...');
+
             clearInterval(updateInterval);
-            clearTimeout(deadTimeout);
+            clearTimeout(exitTimeout);
 
-            _.delay(() => {
+            exitTimeout = setTimeout(() => {
                 debug('Exiting now...');
+                debug('assignments', assignments);
+                debug('produced', produced);
+                debug('consumed', consumed);
 
-                killAll(() => {
+                killAll((killAllErr) => {
+                    if (killAllErr) signale.error(killAllErr);
+
                     client.zk.deleteTopics([topicName], (dErr) => {
                         if (dErr) {
                             signale.error(dErr);
@@ -129,22 +157,19 @@ function run() {
 
                         if (err) {
                             signale.fatal(err);
+                            if (done) {
+                                done(err);
+                                return;
+                            }
+                            process.exit(1);
                         }
 
                         signale.success('DONE!');
-                        debug('assignments', assignments);
-                        debug('produced', produced);
-                        debug('consumed', consumed);
-                        if (_.isFunction(done)) {
+                        if (done) {
                             done();
                             return;
                         }
-
-                        if (err) {
-                            process.exit(1);
-                        } else {
-                            process.exit(0);
-                        }
+                        process.exit(0);
                     });
                 });
             }, 5000);
@@ -155,24 +180,39 @@ function run() {
                 callback();
                 return;
             }
-
+            let waitUntilTimeout;
+            let shutdownTimeout;
             signale.warn('Killing all remaining children');
 
             _.forEach(_.values(children), (child) => {
                 child.kill('SIGTERM');
             });
 
-            setTimeout(() => {
-                callback();
-            }, 5 * 1000).unref();
+            function waitUntilDead() {
+                debug(`waiting until child processes are dead... ${_.size(_.values(children))}`);
+                waitUntilTimeout = setTimeout(() => {
+                    if (_.isEmpty(children)) {
+                        clearTimeout(shutdownTimeout);
+                        callback();
+                        return;
+                    }
+                    waitUntilDead();
+                }, 100);
+            }
+            waitUntilDead();
+
+            shutdownTimeout = setTimeout(() => {
+                clearTimeout(waitUntilTimeout);
+                callback(new Error('Failed to shutdown children in 10 seconds'));
+            }, 10 * 1000);
         }
 
         function exitIfNeeded() {
             if (_.sum(_.values(produced)) > totalMessages) {
-                exitNow();
+                exit();
             }
             if (_.isEmpty(children)) {
-                exitNow();
+                exit();
             }
         }
 
@@ -218,6 +258,7 @@ function run() {
 
         _.times(numProducers, (i) => {
             const key = `produce-${i}`;
+            let heartbeatTimeout;
             signale.time(key);
 
             const child = fork(`${__dirname}/produce-worker.js`, [], {
@@ -234,8 +275,10 @@ function run() {
 
             child.on('close', (code) => {
                 delete children[key];
+                clearTimeout(heartbeatTimeout);
+
                 if (code !== 0) {
-                    exitNow(new Error(`${key} died with an exit code of ${code}`));
+                    exit(new Error(`${key} died with an exit code of ${code}`));
                     return;
                 }
 
@@ -258,6 +301,13 @@ function run() {
                     const responseId = data.requestId;
                     child.send({ fn: 'receiveMessageBatch', messages: batch, responseId });
                 }
+                if (data.fn === 'heartbeat') {
+                    clearTimeout(heartbeatTimeout);
+                    heartbeatTimeout = setTimeout(() => {
+                        debug(`WARNING:  ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`);
+                        child.kill('SIGKILL');
+                    }, data.validFor);
+                }
             });
 
             children[key] = child;
@@ -265,7 +315,7 @@ function run() {
 
         _.times(numConsumers, (i) => {
             const key = `consume-${i + 1}`;
-
+            let heartbeatTimeout;
             signale.time(key);
 
             const child = fork(`${__dirname}/consume-worker.js`, [], {
@@ -285,9 +335,10 @@ function run() {
 
             child.on('close', (code) => {
                 delete children[key];
+                clearTimeout(heartbeatTimeout);
 
                 if (code > 0) {
-                    exitNow(new Error(`${key} died with an exit code of ${code}`));
+                    exit(new Error(`${key} died with an exit code of ${code}`));
                     return;
                 }
 
@@ -307,19 +358,25 @@ function run() {
                 if (data.fn === 'updateAssignments') {
                     assignments[key] = data.assignments;
                 }
+                if (data.fn === 'heartbeat') {
+                    clearTimeout(heartbeatTimeout);
+                    heartbeatTimeout = setTimeout(() => {
+                        debug(`WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`);
+                        child.kill('SIGKILL');
+                    }, data.validFor);
+                }
             });
 
             children[key] = child;
         });
 
-        sigtermHandler(() => new Promise((resolve, reject) => {
+        exitHandler(signal => new Promise((resolve, reject) => {
+            debug(`caught ${signal} handler`);
             exit(null, (err) => {
                 if (err) {
                     reject(err);
                 } else {
-                    setTimeout(() => {
-                        resolve();
-                    }, 5000);
+                    resolve();
                 }
             });
         }));

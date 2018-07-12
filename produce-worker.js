@@ -29,6 +29,10 @@ process.on('message', ({ fn, msg }) => {
     }
 });
 
+setInterval(() => {
+    process.send({ fn: 'heartbeat', validFor: 9000 });
+}, 3000).unref();
+
 produce({
     producedMessages,
     startBatch,

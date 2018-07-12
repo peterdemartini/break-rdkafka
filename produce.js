@@ -1,9 +1,9 @@
 'use strict';
 
-const sigtermHandler = require('sigterm-handler');
 const Kafka = require('node-rdkafka');
 const _ = require('lodash');
 const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
+const exitHandler = require('./exit-handler');
 const genId = require('./generate-id');
 
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
@@ -23,11 +23,14 @@ function produce({ producedMessages, startBatch }, callback) {
 
     const producer = new Kafka.Producer({
         'client.id': genId('break-kafka-'),
+        'compression.codec': 'gzip',
         debug: 'broker,topic',
         'queue.buffering.max.messages': batchSize * 5,
         'queue.buffering.max.ms': 10 * 1000,
+        'topic.metadata.refresh.interval.ms': 10000,
         'batch.num.messages': batchSize,
-        'metadata.broker.list': kafkaBrokers
+        'metadata.broker.list': kafkaBrokers,
+        'log.connection.close': false
     });
 
     // logging debug messages, if debug is enabled
@@ -62,9 +65,9 @@ function produce({ producedMessages, startBatch }, callback) {
                     producer.flush(60000, (flusherr) => {
                         if (err) debug('flush error', flusherr);
                         producedMessages(messages);
-                        setTimeout(() => {
+                        setImmediate(() => {
                             processBatch();
-                        }, 100);
+                        });
                     });
                 });
                 _.forEach(messages, (message) => {
@@ -110,7 +113,8 @@ function produce({ producedMessages, startBatch }, callback) {
         cb();
     }
 
-    sigtermHandler(() => new Promise((resolve, reject) => {
+    exitHandler(signal => new Promise((resolve, reject) => {
+        debug(`caught ${signal} handler`);
         _producerDone(null, (err) => {
             if (err) {
                 reject(err);

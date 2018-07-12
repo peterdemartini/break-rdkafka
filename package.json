@@ -6,7 +6,8 @@
   "scripts": {
     "lint": "eslint *.js",
     "lint:fix": "eslint --fix *.js",
-    "start": "env DEBUG='*break-rdkafka*' node command.js"
+    "start": "env DEBUG='*break-rdkafka*' node command.js",
+    "start:break": "env DEBUG='*break-rdkafka*' BREAK_KAFKA='true' node command.js"
   },
   "devDependencies": {
     "eslint": "^4.19.1",
@@ -14,12 +15,12 @@
     "eslint-plugin-import": "^2.13.0"
   },
   "dependencies": {
+    "bluebird": "^3.5.1",
     "debug": "^3.1.0",
     "kafka-tools": "^1.1.0",
     "lodash": "^4.17.10",
     "nanoid": "^1.0.7",
     "node-rdkafka": "^2.3.4",
-    "signale": "^1.2.1",
-    "sigterm-handler": "^3.0.0"
+    "signale": "^1.2.1"
   }
 }
