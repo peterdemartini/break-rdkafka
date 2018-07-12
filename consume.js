@@ -33,6 +33,17 @@ function _consumer({
         process.exit(1);
     }
 
+    function simpleTopics(input) {
+        let topics = input;
+        if (_.isPlainObject(input)) {
+            topics = _.values(input);
+        }
+        return _.map(topics, ({ partition, offset = 'N/A' }) => {
+            const message = `P: ${partition}, O: ${offset}`;
+            return message;
+        }).join(', ');
+    }
+
     debug('initializing...');
     const finishInterval = setInterval(() => {
         updateAssignments(assignments);
@@ -52,7 +63,7 @@ function _consumer({
                 reportError(err);
             } else {
                 // Commit went through. Let's log the topic partitions
-                debug('COMMIT DONE', topicPartitions);
+                debug('COMMIT DONE', simpleTopics(topicPartitions));
             }
         },
         rebalance_cb(err, changed) {
@@ -63,12 +74,12 @@ function _consumer({
                     return isNew;
                 });
                 assignments = _.unionBy(assignments, updated, 'partition');
-                debug('REBALANCE: assigned', assignments);
+                debug('REBALANCE: assigned', simpleTopics(assignments));
 
                 this.assign(changed);
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 rebalancing = true;
-                debug('REBALANCE: unassigned', _.map(changed, 'partition'));
+                debug('REBALANCE: unassigned', simpleTopics(changed));
 
                 this.unassign(changed);
             } else {
@@ -119,10 +130,11 @@ function _consumer({
             consumer.setDefaultConsumeTimeout(batchSize);
             consumer.consume(batchSize, (err, messages) => {
                 if (err) {
-                    debug('consume error', err);
-                    consumerDone(err);
+                    reportError(err);
+                    consume();
                     return;
                 }
+
                 if (_.isEmpty(messages)) {
                     consume();
                     return;
@@ -148,11 +160,10 @@ function _consumer({
                     debug('WARNING: about to commit when paused or rebalancing');
                 }
 
-                if (useCommitAsync) {
-                    debug('committing async...', _.values(offsets));
-                } else {
-                    debug('committing sync...', _.values(offsets));
+                if (!useCommitAsync) {
+                    debug('committing sync...', simpleTopics(offsets));
                 }
+
                 _.forEach(_.values(offsets), (message) => {
                     if (useCommitAsync) {
                         consumer.commit(message);
@@ -160,9 +171,9 @@ function _consumer({
                         consumer.commitSync(message);
                     }
                 });
-                debug('committing took');
-
-
+                if (!useCommitAsync) {
+                    debug('committing took');
+                }
                 consumedMessages(messages);
                 consume();
             });
@@ -190,7 +201,7 @@ function _consumer({
         clearTimeout(randomTimeoutId);
         clearInterval(finishInterval);
         ended = true;
-        debug('assignments', assignments);
+        debug('assignments', simpleTopics(assignments));
         if (consumer.isConnected()) {
             consumer.disconnect();
         }
@@ -252,8 +263,7 @@ function _consumer({
         paused = false;
     }
 
-    exitHandler(signal => new Promise((resolve, reject) => {
-        debug(`caught ${signal} handler`);
+    exitHandler(() => new Promise((resolve, reject) => {
         _consumerDone(null, (err) => {
             if (err) {
                 reject(err);

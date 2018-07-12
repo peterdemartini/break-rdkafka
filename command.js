@@ -16,10 +16,10 @@ const {
     NUM_CONSUMERS = '4',
     NUM_PRODUCERS = '3',
     NUM_PARTITIONS = '16',
-    MESSAGES_PER_PARTITION = '100000',
+    MESSAGES_PER_PARTITION = '40000',
     DEBUG = 'break-rdkafka',
     DISABLE_PAUSE_AND_RESUME = breakKafka ? 'false' : 'true',
-    USE_CONSUMER_PAUSE_AND_RESUME = 'false',
+    USE_CONSUMER_PAUSE_AND_RESUME = breakKafka ? 'false' : 'true',
     START_TIMEOUT = breakKafka ? '5000' : '1000',
     USE_COMMIT_ASYNC = breakKafka ? 'false' : 'true',
     BATCH_SIZE = '10000',
@@ -94,22 +94,26 @@ function run() {
             if (producedCount <= 0) {
                 updates.push('waiting for messages to be produced...');
             } else if (producedCount >= totalMessages) {
-                updates.push(`all ${producedCount} messages produced`);
+                updates.push(`all ${producedCount} messages have been produced`);
             } else {
-                updates.push(`produced ${producedCount - lastProducedCount} more messages`);
+                const remaining = totalMessages - producedCount;
+                updates.push(`produced ${producedCount - lastProducedCount}, ${remaining} remaining...`);
             }
 
             if (consumedCount <= 0) {
                 updates.push('waiting for messages to be consumed...');
             } else if (consumedCount >= totalMessages) {
-                updates.push(`all ${consumedCount} messages consumed`);
+                updates.push(`all ${consumedCount} messages have been consumed`);
             } else {
-                updates.push(`consumed ${consumedCount - lastConsumedCount} more messages`);
+                const remaining = totalMessages - consumedCount;
+                updates.push(`consumed ${consumedCount - lastConsumedCount}, ${remaining} remaining...`);
             }
 
             updates.push(`active child processes ${childrenCount}`);
 
             const newErrors = _.difference(reportedErrors, lastErrors);
+            const errCount = _.size(reportedErrors);
+            updates.push(!errCount ? 'no reported errors' : `${errCount} errors have been reported`);
             updates.push(...newErrors);
 
             debug(`UPDATES:\n - ${updates.join('\n - ')}\n`);
@@ -143,18 +147,17 @@ function run() {
             if (err) {
                 signale.error('Exiting due to error: ', err); // eslint-disable-line
             }
-            debug('Exiting in 5 seconds...');
+
+            if (exitTimeout != null) {
+                debug('already exiting...');
+                return;
+            }
 
             clearInterval(updateInterval);
-            clearTimeout(exitTimeout);
+            debug('Exiting in 5 seconds...');
 
             exitTimeout = setTimeout(() => {
                 debug('Exiting now...');
-                debug('assignments', assignments);
-                debug('produced', produced);
-                debug('consumed', consumed);
-                debug('reportedErrors', reportedErrors);
-
                 killAll(signal, (killAllErr) => {
                     if (killAllErr) signale.error(killAllErr);
 
@@ -163,10 +166,14 @@ function run() {
                             signale.error(dErr);
                         }
                         debug(`DELETED TOPIC: ${topicName}`);
+                        debug('assignments', assignments);
+                        debug('produced', produced);
+                        debug('consumed', consumed);
+                        debug('reportedErrors', reportedErrors);
 
                         if (err) {
                             signale.fatal(err);
-                            if (done) {
+                            if (_.isFunction(done)) {
                                 done(err);
                                 return;
                             }
@@ -174,7 +181,7 @@ function run() {
                         }
 
                         signale.success('DONE!');
-                        if (done) {
+                        if (_.isFunction(done)) {
                             done();
                             return;
                         }
@@ -399,7 +406,6 @@ function run() {
         });
 
         exitHandler(signal => new Promise((resolve, reject) => {
-            debug(`caught ${signal} handler`);
             exit(null, signal, (err) => {
                 if (err) {
                     reject(err);

@@ -7,7 +7,7 @@
     "lint": "eslint *.js",
     "lint:fix": "eslint --fix *.js",
     "start": "env DEBUG='*break-rdkafka*' node command.js",
-    "start:break": "env DEBUG='*break-rdkafka*' BREAK_KAFKA='true' node command.js"
+    "break": "env DEBUG='*break-rdkafka*' BREAK_KAFKA='true' node command.js"
   },
   "devDependencies": {
     "eslint": "^4.19.1",

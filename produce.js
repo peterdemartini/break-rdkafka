@@ -113,8 +113,7 @@ function produce({ producedMessages, startBatch, reportError }, callback) {
         cb();
     }
 
-    exitHandler(signal => new Promise((resolve, reject) => {
-        debug(`caught ${signal} handler`);
+    exitHandler(() => new Promise((resolve, reject) => {
         _producerDone(null, (err) => {
             if (err) {
                 reject(err);
