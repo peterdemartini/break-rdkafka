@@ -82,6 +82,8 @@ function run() {
         let consumeStuckCount = 0;
         let produceStuckCount = 0;
         let exitTimeout = null;
+        let lastErrors = [];
+        const reportedErrors = [];
 
         const updateInterval = setInterval(() => {
             const consumedCount = _.sum(_.values(consumed));
@@ -106,33 +108,38 @@ function run() {
             }
 
             updates.push(`active child processes ${childrenCount}`);
+
+            const newErrors = _.difference(reportedErrors, lastErrors);
+            updates.push(...newErrors);
+
             debug(`UPDATES:\n - ${updates.join('\n - ')}\n`);
 
-            if (consumedCount && consumedCount === lastConsumedCount) {
+            if (consumedCount > 0 && consumedCount < totalMessages && consumedCount && consumedCount === lastConsumedCount) {
                 consumeStuckCount += 1;
             } else {
                 consumeStuckCount = 0;
             }
 
-            if (producedCount && producedCount === lastProducedCount) {
+            if (producedCount > 0 && producedCount < totalMessages && producedCount === lastProducedCount) {
                 produceStuckCount += 1;
             } else {
                 produceStuckCount = 0;
             }
 
-            if (consumeStuckCount === 6) {
-                exit(new Error(`Consume count (${lastConsumedCount}) has stayed the same for 30 seconds`));
+            if (consumeStuckCount === 3) {
+                exit(new Error(`Consume count (${consumedCount}) has stayed the same for 30 seconds`));
             }
 
-            if (produceStuckCount === 6) {
-                exit(new Error(`Produce count (${produceStuckCount}) has stayed the same for 30 seconds`));
+            if (produceStuckCount === 3) {
+                exit(new Error(`Produce count (${producedCount}) has stayed the same for 30 seconds`));
             }
 
+            lastErrors = reportedErrors;
             lastConsumedCount = consumedCount;
             lastProducedCount = producedCount;
-        }, 5000);
+        }, 10 * 1000);
 
-        function exit(err, done) {
+        function exit(err, signal, done) {
             if (err) {
                 signale.error('Exiting due to error: ', err); // eslint-disable-line
             }
@@ -146,14 +153,16 @@ function run() {
                 debug('assignments', assignments);
                 debug('produced', produced);
                 debug('consumed', consumed);
+                debug('reportedErrors', reportedErrors);
 
-                killAll((killAllErr) => {
+                killAll(signal, (killAllErr) => {
                     if (killAllErr) signale.error(killAllErr);
 
                     client.zk.deleteTopics([topicName], (dErr) => {
                         if (dErr) {
                             signale.error(dErr);
                         }
+                        debug(`DELETED TOPIC: ${topicName}`);
 
                         if (err) {
                             signale.fatal(err);
@@ -175,17 +184,17 @@ function run() {
             }, 5000);
         }
 
-        function killAll(callback) {
+        function killAll(signal = 'SIGTERM', callback) {
             if (_.isEmpty(children)) {
                 callback();
                 return;
             }
             let waitUntilTimeout;
             let shutdownTimeout;
-            signale.warn('Killing all remaining children');
+            signale.warn(`${signal} all remaining children`);
 
             _.forEach(_.values(children), (child) => {
-                child.kill('SIGTERM');
+                child.kill(signal);
             });
 
             function waitUntilDead() {
@@ -197,7 +206,7 @@ function run() {
                         return;
                     }
                     waitUntilDead();
-                }, 100);
+                }, 1000);
             }
             waitUntilDead();
 
@@ -216,13 +225,6 @@ function run() {
             }
         }
 
-        const shouldFinishChildren = _.once(() => {
-            _.forEach(children, (child, key) => {
-                debug(`sending shouldFinish to ${key}`);
-                child.send({ fn: 'shouldFinish' });
-            });
-        });
-
         const debugToManyMessages = _.throttle((count) => {
             debug(`consumed more messages than it should have (${count})`);
         }, 1000);
@@ -235,7 +237,7 @@ function run() {
             if (count === totalMessages) {
                 signale.success(`consumed all of ${totalMessages} messages`);
                 debug('consumed result', consumed);
-                shouldFinishChildren();
+                exit();
             }
             if (count > totalMessages) {
                 debugToManyMessages(count);
@@ -277,6 +279,10 @@ function run() {
                 delete children[key];
                 clearTimeout(heartbeatTimeout);
 
+                const message = `WARNING: child exited with status code ${code}`;
+                debug(message);
+                reportedErrors.push(message);
+
                 if (code !== 0) {
                     exit(new Error(`${key} died with an exit code of ${code}`));
                     return;
@@ -295,18 +301,28 @@ function run() {
                 if (data.fn === 'producedMessages') {
                     producedMessages(data.msg);
                 }
+
                 if (data.fn === 'getMessageBatch') {
                     const randomStart = _.random(0, _.size(messages));
                     const batch = messages.splice(randomStart, 5000);
                     const responseId = data.requestId;
                     child.send({ fn: 'receiveMessageBatch', messages: batch, responseId });
                 }
+
                 if (data.fn === 'heartbeat') {
                     clearTimeout(heartbeatTimeout);
                     heartbeatTimeout = setTimeout(() => {
-                        debug(`WARNING:  ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`);
+                        const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
+                        debug(message);
+                        reportedErrors.push(message);
                         child.kill('SIGKILL');
                     }, data.validFor);
+                }
+
+                if (data.fn === 'reportError') {
+                    const message = `ERROR: ${key} reported error ${data.error}`;
+                    debug(message);
+                    reportedErrors.push(message);
                 }
             });
 
@@ -337,6 +353,10 @@ function run() {
                 delete children[key];
                 clearTimeout(heartbeatTimeout);
 
+                const message = `WARNING: child exited with status code ${code}`;
+                debug(message);
+                reportedErrors.push(message);
+
                 if (code > 0) {
                     exit(new Error(`${key} died with an exit code of ${code}`));
                     return;
@@ -361,9 +381,17 @@ function run() {
                 if (data.fn === 'heartbeat') {
                     clearTimeout(heartbeatTimeout);
                     heartbeatTimeout = setTimeout(() => {
-                        debug(`WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`);
+                        const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
+                        debug(message);
+                        reportedErrors.push(message);
                         child.kill('SIGKILL');
                     }, data.validFor);
+                }
+
+                if (data.fn === 'reportError') {
+                    const message = `ERROR: ${key} reported error ${data.error}`;
+                    debug(message);
+                    reportedErrors.push(message);
                 }
             });
 
@@ -372,7 +400,7 @@ function run() {
 
         exitHandler(signal => new Promise((resolve, reject) => {
             debug(`caught ${signal} handler`);
-            exit(null, (err) => {
+            exit(null, signal, (err) => {
                 if (err) {
                     reject(err);
                 } else {
@@ -386,10 +414,11 @@ function run() {
         signale.time('making messages');
         const results = [];
         _.times(numPartitions, (partition) => {
-            _.times(messagesPerPartition, () => {
+            const partionMessages = _.times(messagesPerPartition, () => {
                 const key = genId(null, 15);
-                results.push({ key, partition });
+                return { key, partition };
             });
+            results.push(...partionMessages);
         });
         signale.timeEnd('making messages');
         return results;

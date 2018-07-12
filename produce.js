@@ -15,7 +15,7 @@ if (!topicName) {
     process.exit(1);
 }
 
-function produce({ producedMessages, startBatch }, callback) {
+function produce({ producedMessages, startBatch, reportError }, callback) {
     debug('initializing...');
 
     let ended = false;
@@ -44,7 +44,7 @@ function produce({ producedMessages, startBatch }, callback) {
 
     // logging all errors
     producer.on('event.error', (err) => {
-        console.error(err); // eslint-disable-line no-console
+        reportError(err);
     });
 
     // Wait for the ready event before producing
@@ -63,7 +63,7 @@ function produce({ producedMessages, startBatch }, callback) {
                 const count = _.size(messages);
                 const sendAfter = _.after(count, () => {
                     producer.flush(60000, (flusherr) => {
-                        if (err) debug('flush error', flusherr);
+                        if (flusherr) reportError(flusherr);
                         producedMessages(messages);
                         setImmediate(() => {
                             processBatch();

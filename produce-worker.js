@@ -33,9 +33,14 @@ setInterval(() => {
     process.send({ fn: 'heartbeat', validFor: 9000 });
 }, 3000).unref();
 
+const reportError = (error) => {
+    process.send({ fn: 'reportError', error: error.stack ? error.stack : error.toString() });
+};
+
 produce({
     producedMessages,
     startBatch,
+    reportError,
 }, (err) => {
     if (err) {
         throw err;

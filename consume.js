@@ -14,7 +14,11 @@ const useConsumerPauseAndResume = process.env.USE_CONSUMER_PAUSE_AND_RESUME === 
 const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
 const batchSize = parseInt(process.env.BATCH_SIZE, 10);
 
-function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callback) {
+function _consumer({
+    updateAssignments,
+    consumedMessages,
+    reportError
+}, callback) {
     let paused = false;
     let rebalancing = false;
     let randomTimeoutId;
@@ -32,10 +36,6 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
     debug('initializing...');
     const finishInterval = setInterval(() => {
         updateAssignments(assignments);
-        if (shouldFinish()) {
-            debug('consumer was told it should finish');
-            consumerDone();
-        }
     }, 500);
 
     const consumer = new Kafka.KafkaConsumer({
@@ -46,6 +46,15 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
         'enable.auto.commit': false,
         'enable.auto.offset.store': false,
         'auto.offset.reset': 'smallest',
+        offset_commit_cb(err, topicPartitions) {
+            if (err) {
+                // There was an error committing
+                reportError(err);
+            } else {
+                // Commit went through. Let's log the topic partitions
+                debug('COMMIT DONE', topicPartitions);
+            }
+        },
         rebalance_cb(err, changed) {
             if (err.code === Kafka.CODES.ERRORS.ERR__ASSIGN_PARTITIONS) {
                 rebalancing = false;
@@ -64,7 +73,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
                 this.unassign(changed);
             } else {
                 // We had a real error
-                console.error(err); // eslint-disable-line no-console
+                reportError(err);
             }
         }
     });
@@ -80,7 +89,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
 
     // logging all errors
     consumer.on('event.error', (err) => {
-        console.error(err); // eslint-disable-line no-console
+        reportError(err);
     });
 
     consumer.on('ready', () => {
@@ -169,7 +178,7 @@ function _consumer({ updateAssignments, shouldFinish, consumedMessages }, callba
     // starting the consumer
     consumer.connect({}, (err) => {
         if (err) {
-            console.error(err); // eslint-disable-line no-console
+            reportError(err);
             return;
         }
         debug('connected');
