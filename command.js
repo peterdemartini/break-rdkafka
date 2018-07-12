@@ -6,23 +6,23 @@ const signale = require('signale');
 const { fork } = require('child_process');
 const stringifyObject = require('stringify-object');
 const debug = require('debug')('break-rdkafka:command');
-const exitHandler = require('./exit-handler');
 
+const exitHandler = require('./exit-handler');
 const genId = require('./generate-id');
 
 const breakKafka = process.env.BREAK_KAFKA === 'true';
 
 const {
     KAFKA_BROKERS = 'localhost:9092,localhost:9093',
-    NUM_CONSUMERS = '5',
+    NUM_CONSUMERS = '4',
     NUM_PRODUCERS = '3',
     NUM_PARTITIONS = '15',
     MESSAGES_PER_PARTITION = '30000',
-    DEBUG = 'break-rdkafka',
-    DISABLE_PAUSE_AND_RESUME = breakKafka ? 'false' : 'true',
-    USE_CONSUMER_PAUSE_AND_RESUME = breakKafka ? 'false' : 'true',
+    DEBUG = 'break-rdkafka*',
+    ENABLE_PAUSE_AND_RESUME = breakKafka ? 'true' : 'false',
+    USE_CONSUMER_PAUSE_AND_RESUME = 'true',
     START_TIMEOUT = breakKafka ? '5000' : '1000',
-    USE_COMMIT_ASYNC = breakKafka ? 'false' : 'true',
+    USE_COMMIT_SYNC = breakKafka ? 'true' : 'false',
     BATCH_SIZE = '10000',
 } = process.env;
 
@@ -49,8 +49,8 @@ function run() {
         numProducers,
         batchSize,
         startTimeout,
-        DISABLE_PAUSE_AND_RESUME,
-        USE_COMMIT_ASYNC,
+        ENABLE_PAUSE_AND_RESUME,
+        USE_COMMIT_SYNC,
         USE_CONSUMER_PAUSE_AND_RESUME,
     });
 
@@ -68,14 +68,15 @@ function run() {
             signale.fatal(createTopicErr);
             return;
         }
+
         const children = {};
         const assignments = {};
         const produced = {};
         const consumed = {};
 
-        _.times(numPartitions, (par) => {
-            consumed[`${par}`] = 0;
-            produced[`${par}`] = 0;
+        _.times(numPartitions, (partition) => {
+            consumed[`${partition}`] = 0;
+            produced[`${partition}`] = 0;
         });
 
         let lastConsumedCount = -1;
@@ -282,7 +283,8 @@ function run() {
             }
         }
 
-        _.times(numProducers, (i) => {
+        function createProducer(i) {
+            let recreating = false;
             const key = `produce-${i}`;
             let heartbeatTimeout;
             signale.time(key);
@@ -301,7 +303,9 @@ function run() {
 
             child.on('close', (code) => {
                 delete children[key];
-                clearTimeout(heartbeatTimeout);
+                if (recreating) {
+                    clearTimeout(heartbeatTimeout);
+                }
 
                 if (exitTimeout == null && !_.isEmpty(messages)) {
                     const message = `WARNING: child ${key} exited with status code ${code}`;
@@ -350,8 +354,12 @@ function run() {
                             debug(message);
                             reportedErrors.push(message);
                         }
+                        child.kill('SIGKILL');
+                        debug(`will recreating producer ${key} in ${data.validFor}ms...`);
+                        recreating = true;
                         heartbeatTimeout = setTimeout(() => {
-                            child.kill('SIGKILL');
+                            reportedErrors.push(`INFO: recreating producer ${key}...`);
+                            createProducer(i);
                         }, data.validFor);
                     }, data.validFor);
                 }
@@ -366,9 +374,10 @@ function run() {
             });
 
             children[key] = child;
-        });
+        }
 
-        _.times(numConsumers, (i) => {
+        function createConsumer(i) {
+            let recreating = false;
             const key = `consume-${i + 1}`;
             let heartbeatTimeout;
             signale.time(key);
@@ -382,15 +391,17 @@ function run() {
                     FORCE_COLOR: '1',
                     START_TIMEOUT: i * startTimeout,
                     DEBUG,
-                    DISABLE_PAUSE_AND_RESUME,
-                    USE_COMMIT_ASYNC
+                    ENABLE_PAUSE_AND_RESUME,
+                    USE_COMMIT_SYNC
                 },
                 stdio: 'inherit'
             });
 
             child.on('close', (code) => {
                 delete children[key];
-                clearTimeout(heartbeatTimeout);
+                if (!recreating) {
+                    clearTimeout(heartbeatTimeout);
+                }
 
                 if (exitTimeout == null) {
                     const message = `WARNING: child ${key} exited with status code ${code}`;
@@ -428,6 +439,12 @@ function run() {
                             reportedErrors.push(message);
                         }
                         child.kill('SIGKILL');
+                        debug(`will recreating consumer ${key} in ${data.validFor}ms...`);
+                        recreating = true;
+                        heartbeatTimeout = setTimeout(() => {
+                            reportedErrors.push(`INFO: recreating consumer ${key}...`);
+                            createConsumer(i);
+                        }, data.validFor);
                     }, data.validFor);
                 }
 
@@ -441,7 +458,11 @@ function run() {
             });
 
             children[key] = child;
-        });
+        }
+
+        _.times(numProducers, createProducer);
+
+        _.times(numConsumers, createConsumer);
 
         exitHandler(signal => new Promise((resolve, reject) => {
             exit(null, signal, (err) => {
@@ -462,6 +483,7 @@ function run() {
             results.push(...partionMessages);
         });
         signale.timeEnd('making messages');
+        debug(`created ${_.size(results)}`);
         return results;
     }
 }

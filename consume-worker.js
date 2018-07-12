@@ -15,7 +15,7 @@ const consumedMessages = (msg) => {
 };
 
 setInterval(() => {
-    process.send({ fn: 'heartbeat', validFor: 6000 });
+    process.send({ fn: 'heartbeat', validFor: 10000 });
 }, 2000).unref();
 
 consume({

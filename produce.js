@@ -40,8 +40,8 @@ function produce({ producedMessages, startBatch, reportError }, callback) {
 
     // logging debug messages, if debug is enabled
     producer.on('event.log', (log) => {
-        if (/(fail|error|warn|issue|disconnect|problem)/gi.test(log.message)) {
-            debug(log.message);
+        if (/(fail|error|warn|issue|disconnect|problem|unable|invalid|rebalance)/gi.test(log.message)) {
+            debug('DEBUG', log.message);
         }
     });
 
@@ -86,9 +86,9 @@ function produce({ producedMessages, startBatch, reportError }, callback) {
                 const count = _.size(messages);
 
                 const sendAfter = _.after(count, () => {
+                    producedMessages(messages);
                     producer.flush(60000, (flusherr) => {
                         if (flusherr) reportError(flusherr);
-                        producedMessages(messages);
                         setImmediate(() => {
                             processing = false;
                             processBatch();

@@ -9,10 +9,10 @@ const exitHandler = require('./exit-handler');
 const genId = require('./generate-id');
 
 // const breakKafka = process.env.BREAK_KAFKA === 'true';
-const useCommitAsync = process.env.USE_COMMIT_ASYNC === 'true';
+const useCommitSync = process.env.USE_COMMIT_SYNC === 'true';
 const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
-const disablePauseAndResume = process.env.DISABLE_PAUSE_AND_RESUME === 'true';
+const enablePauseAndResume = process.env.ENABLE_PAUSE_AND_RESUME === 'true';
 const useConsumerPauseAndResume = process.env.USE_CONSUMER_PAUSE_AND_RESUME === 'true';
 const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
 const batchSize = parseInt(process.env.BATCH_SIZE, 10);
@@ -103,7 +103,7 @@ function _consumer({
 
     // logging debug messages, if debug is enabled
     consumer.on('event.log', (log) => {
-        if (/(fail|error|warn|issue|disconnect|problem)/gi.test(log.message)) {
+        if (/(fail|error|warn|issue|disconnect|problem|unable|invalid|rebalance)/gi.test(log.message)) {
             debug('DEBUG', log.message);
         }
     });
@@ -139,7 +139,7 @@ function _consumer({
             debug('Starting...');
             // start consuming messages
             consume();
-            if (!disablePauseAndResume) randomlyPauseAndResume();
+            if (enablePauseAndResume) randomlyPauseAndResume();
         }, startTimeout);
     });
 
@@ -185,24 +185,18 @@ function _consumer({
                 });
 
                 if (paused || rebalancing) {
-                    debug('WARNING: about to commit when paused or rebalancing');
+                    reportError('WARNING: about to commit when paused or rebalancing');
                 }
 
                 _.forEach(_.values(offsets), ({ offset: _offset, topic, partition }) => {
                     const offset = _offset + 1;
                     assignments = _.map(assignments, (assigned) => {
                         if (assigned === partition) {
-                            return assigned.offsets + 1;
+                            assigned.offsets += 1;
                         }
                         return assigned;
                     });
-                    if (useCommitAsync) {
-                        consumer.commit({
-                            offset,
-                            partition,
-                            topic
-                        });
-                    } else {
+                    if (useCommitSync) {
                         debug(`committing sync... partition: ${partition} offset: ${offset}`);
                         consumer.commitSync({
                             offset,
@@ -210,6 +204,12 @@ function _consumer({
                             topic
                         });
                         debug('committing took');
+                    } else {
+                        consumer.commit({
+                            offset,
+                            partition,
+                            topic
+                        });
                     }
                 });
 
@@ -310,7 +310,7 @@ function _consumer({
     }
 
     function pause() {
-        if (disablePauseAndResume) return;
+        if (!enablePauseAndResume) return;
         if (paused) return;
         debug('PAUSING!');
         if (useConsumerPauseAndResume) {
@@ -320,7 +320,7 @@ function _consumer({
     }
 
     function resume() {
-        if (disablePauseAndResume) return;
+        if (!enablePauseAndResume) return;
         if (!paused) return;
         debug('RESUMING!');
         if (useConsumerPauseAndResume) {
