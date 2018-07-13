@@ -1,5 +1,6 @@
 'use strict';
 
+const Promise = require('bluebird');
 const _ = require('lodash');
 const signale = require('signale');
 const { fork } = require('child_process');
@@ -26,7 +27,7 @@ function createProducer(config) {
     let heartbeatTimeout;
     signale.time(producerId);
 
-    const child = fork(`${__dirname}/produce-worker.js`, [], {
+    const child = fork(`${__dirname}/produce.js`, [], {
         env: {
             PRODUCER_ID: producerId,
             BREAK_KAFKA_TOPIC_NAME: topicName,
@@ -40,11 +41,12 @@ function createProducer(config) {
 
     child.on('close', (code) => {
         delete children[producerId];
-        if (isDoneProducing() || !recreating) {
+        if (isExiting() || (isDoneProducing() && !recreating)) {
+            recreating = false;
             clearTimeout(heartbeatTimeout);
         }
 
-        if (!isExiting() && isDoneProducing()) {
+        if (!isExiting() && !isDoneProducing()) {
             const message = `WARNING: child ${producerId} exited with status code ${code}`;
             reportError(message);
             if (code !== 0) {
@@ -92,6 +94,7 @@ function createProducer(config) {
                 debug(`will recreating producer ${producerId} in ${data.validFor}ms...`);
                 recreating = true;
                 heartbeatTimeout = setTimeout(() => {
+                    if (isDoneProducing() || isExiting()) return;
                     reportError(`INFO: recreating producer ${producerId}...`);
                     createProducer();
                 }, data.validFor);
@@ -120,6 +123,8 @@ function createConsumer(config) {
         DEBUG,
         ENABLE_PAUSE_AND_RESUME,
         USE_COMMIT_SYNC,
+        ENABLE_REBALANCE,
+        assignedPartitions,
         isDoneConsuming,
         isExiting,
         reportError,
@@ -132,7 +137,7 @@ function createConsumer(config) {
     let heartbeatTimeout;
     signale.time(consumerId);
 
-    const child = fork(`${__dirname}/consume-worker.js`, [], {
+    const child = fork(`${__dirname}/consume.js`, [], {
         env: {
             CONSUMER_ID: consumerId,
             BREAK_KAFKA_TOPIC_NAME: topicName,
@@ -142,6 +147,8 @@ function createConsumer(config) {
             START_TIMEOUT: _.random(0, numConsumers) * startTimeout,
             DEBUG,
             ENABLE_PAUSE_AND_RESUME,
+            ENABLE_REBALANCE,
+            ASSIGNED_PARTITIONS: JSON.stringify(assignedPartitions),
             USE_COMMIT_SYNC
         },
         stdio: 'inherit'
@@ -149,11 +156,12 @@ function createConsumer(config) {
 
     child.on('close', (code) => {
         delete children[consumerId];
-        if (isExiting() || (isExiting() && recreating)) {
+        if (isExiting() || (isDoneConsuming() && !recreating)) {
+            recreating = false;
             clearTimeout(heartbeatTimeout);
         }
 
-        if (!isExiting() && isDoneConsuming()) {
+        if (!isExiting() && !isDoneConsuming()) {
             const message = `WARNING: child ${consumerId} exited with status code ${code}`;
 
             reportError(message);
@@ -200,6 +208,7 @@ function createConsumer(config) {
                 debug(`will recreating consumer ${consumerId} in ${data.validFor}ms...`);
                 recreating = true;
                 heartbeatTimeout = setTimeout(() => {
+                    if (isDoneConsuming() || isExiting()) return;
                     reportError(`INFO: recreating consumer ${consumerId}...`);
                     createConsumer(config);
                 }, data.validFor);

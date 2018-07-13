@@ -12,22 +12,42 @@ module.exports = (fn, timeout = 20 * 1000) => {
         }, timeout);
     });
 
-    const exit = (signal) => {
-        console.error(`caught ${signal}, exiting...`);
-        if (!fn) return Promise.resolve();
-        return Promise.race([fn(signal), timeoutPromise]).catch((error) => {
-            console.error(error.stack ? error.stack : error.toString());
-            process.exit(1);
-        });
+    const exit = (signal, err) => {
+        if (err) {
+            console.error(`caught ${signal} with error: ${err.stack}, exiting...`);
+        } else {
+            console.error(`caught ${signal}, exiting...`);
+        }
+
+        const startTime = Date.now();
+        return Promise
+            .race([
+                fn(signal, err),
+                timeoutPromise()
+            ])
+            .then(() => {
+                console.log(`Exiting... took ${Date.now() - startTime}ms`);
+                process.exit(0);
+            })
+            .catch((error) => {
+                console.error(error.stack ? error.stack : error.toString());
+                process.exit(1);
+            });
     };
+
     process.on('SIGINT', () => {
-        exit('SIGINT').then(() => {
-            process.exit();
-        });
+        exit('SIGINT');
     });
+
     process.on('SIGTERM', () => {
-        exit('SIGTERM').then(() => {
-            process.exit();
-        });
+        exit('SIGTERM');
+    });
+
+    process.on('uncaughtException', (err) => {
+        exit('uncaughtException', err);
+    });
+
+    process.on('unhandledRejection', (err) => {
+        exit('unhandledRejection', err);
     });
 };

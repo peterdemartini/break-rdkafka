@@ -1,5 +1,6 @@
 'use strict';
 
+const Promise = require('bluebird');
 const _ = require('lodash');
 const { kafka } = require('kafka-tools');
 const signale = require('signale');
@@ -27,6 +28,7 @@ const {
     NUM_PARTITIONS = '15',
     MESSAGES_PER_PARTITION = '30000',
     DEBUG = 'break-rdkafka*',
+    ENABLE_REBALANCE = 'true',
     ENABLE_PAUSE_AND_RESUME = breakKafka ? 'true' : 'false',
     USE_CONSUMER_PAUSE_AND_RESUME = 'true',
     START_TIMEOUT = breakKafka ? '5000' : '1000',
@@ -114,6 +116,23 @@ async function run() {
         return getProducedCount() >= totalMessages && _.isEmpty(messages);
     }
 
+    function debugResults(results, prefix = 'results') {
+        let hasInvalid = false;
+        const actualPartitionsCount = _.size(_.keys(results));
+        if (actualPartitionsCount !== numPartitions) {
+            debug(`${prefix}: expected number of partitions to equal ${numPartitions}, but got ${actualPartitionsCount}`);
+            hasInvalid = true;
+        }
+        _.forEach(results, (value, partition) => {
+            if (value !== messagesPerPartition) {
+                debug(`${prefix}: partition ${partition} has invalid count ${value}, expected ${messagesPerPartition}`);
+                hasInvalid = true;
+            }
+        });
+        if (hasInvalid) return;
+        debug(`${prefix}: has all partitions have the expected ${messagesPerPartition} messages`);
+    }
+
     function isExiting() {
         return exiting;
     }
@@ -163,7 +182,7 @@ async function run() {
         updates.push(`active child processes ${childrenCount}`);
 
         if (isConsuming() && consumedCount === lastConsumedCount) {
-            reportError(`WARNING: consumed count ${producedCount} stayed the same`);
+            reportError(`WARNING: consumed count ${consumedCount} stayed the same`);
             consumeStuckCount += 1;
         } else {
             consumeStuckCount = 0;
@@ -227,9 +246,9 @@ async function run() {
         }
 
         debug(`DELETED TOPIC: ${topicName}`);
-        debug('assignments', stringifyObject(getAssignments()));
-        debug('produced', stringifyObject(produced));
-        debug('consumed', stringifyObject(consumed));
+        debug('assignments', getAssignments());
+        debugResults(produced, 'produced');
+        debugResults(consumed, 'consumed');
         debug('reportedErrors', stringifyObject(reportedErrors));
 
         if (err) {
@@ -258,37 +277,45 @@ async function run() {
         }
     }
 
-    const debugToManyMessages = _.debounce((count) => {
-        debug(`consumed more messages than it should have (${count})`);
-    }, 1000);
+    const reportToManyMessage = _.debounce(reportError, 1000);
 
     function consumedMessages(input) {
         _.forEach(input, (message) => {
             consumed[`${message.partition}`] += 1;
         });
+
+        if (isConsuming()) return;
+
         const count = getConsumedCount();
         if (count === totalMessages) {
-            signale.success(`consumed all of ${totalMessages} messages`);
-            debug('consumed result', consumed);
+            signale.success(`SUCESS! consumed all of ${totalMessages} messages`);
             exit();
         }
+
         if (count > totalMessages) {
-            debugToManyMessages(count);
+            reportToManyMessage(`consumed more messages than it should have (${count})`);
         }
+
+        debugResults(consumed, 'consumed');
     }
 
     function producedMessages(input) {
         _.forEach(input, (message) => {
             produced[`${message.partition}`] += 1;
         });
+
+        if (isProducing()) return;
+
         const count = getProducedCount();
         if (count === totalMessages) {
             signale.success(`produced all of ${totalMessages} messages`);
-            debug('produced result', produced);
         }
+
         if (count > totalMessages) {
-            reportError(`produced more messages than it should have (${count})`);
+            reportToManyMessage(`produced more messages than it should have (${count})`);
         }
+
+        debugResults(produced, 'produced');
     }
 
 
@@ -308,7 +335,10 @@ async function run() {
         createProducer(config);
     });
 
-    _.times(numConsumers, () => {
+    const partitionsPerWorker = _.chunk(_.times(numPartitions), numConsumers);
+    debug('partitionsPerWorker', partitionsPerWorker);
+
+    _.times(numConsumers, (i) => {
         const config = {
             topicName,
             kafkaBrokers,
@@ -317,7 +347,9 @@ async function run() {
             startTimeout,
             DEBUG,
             ENABLE_PAUSE_AND_RESUME,
+            ENABLE_REBALANCE,
             USE_COMMIT_SYNC,
+            assignedPartitions: partitionsPerWorker[i],
             isDoneConsuming,
             isExiting,
             reportError,
