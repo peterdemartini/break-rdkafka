@@ -32,8 +32,14 @@ const producedMessages = (msg) => {
 };
 
 const startBatch = (callback) => {
+    if (ended) {
+        callback();
+        return;
+    }
+
     const requestId = genId('batch');
     process.send({ fn: 'getMessageBatch', requestId });
+
     const onMessage = ({ fn, messages, responseId }) => {
         if (fn !== 'receiveMessageBatch') {
             return;
@@ -47,18 +53,13 @@ const startBatch = (callback) => {
     process.on('message', onMessage);
 };
 
-process.on('message', ({ fn, msg }) => {
-    if (fn === 'producedMessages') {
-        producedMessages(msg);
-    }
-});
-
 const heartbeatInterval = setInterval(() => {
     if (ended) return;
     process.send({ fn: 'heartbeat', validFor: 10000 });
 }, 2000).unref();
 
 const reportError = (error) => {
+    if (ended) return;
     process.send({ fn: 'reportError', error: error.stack ? error.stack : error.toString() });
 };
 
@@ -200,7 +201,9 @@ async function producerDone(err, skipExit) {
 
         const flush = Promise.promisify(producer.flush, { context: err });
 
-        await flush(60000);
+        if (producer.isConnected()) {
+            await flush(60000);
+        }
     }
 
     producer.disconnect();

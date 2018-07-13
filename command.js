@@ -227,11 +227,13 @@ async function run() {
             signale.error('Will exit because to error: ', err);
         }
 
-        clearInterval(updateInterval);
         debug('Exiting in 5 seconds...');
 
         exiting = true;
         await Promise.delay(5000);
+
+        clearInterval(updateInterval);
+
         debug('Exiting now...');
         try {
             await killAll(signal);
@@ -336,7 +338,6 @@ async function run() {
     });
 
     const partitionsPerWorker = _.chunk(_.times(numPartitions), numConsumers);
-    debug('partitionsPerWorker', partitionsPerWorker);
 
     _.times(numConsumers, (i) => {
         const config = {
@@ -359,7 +360,7 @@ async function run() {
         createConsumer(config);
     });
 
-    exitHandler(signal => exit(null, signal, true));
+    exitHandler((signal, err) => exit(err, 'SIGTERM', true));
 
     function makeMessages() {
         signale.time('making messages');

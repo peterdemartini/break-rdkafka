@@ -28,15 +28,20 @@ try {
     // this is okay
 }
 
+let ended = false;
+
 const heartbeatInterval = setInterval(() => {
+    if (ended) return;
     process.send({ fn: 'heartbeat', validFor: 10000 });
 }, 2000).unref();
 
 const updateAssignments = (assignments) => {
+    if (ended) return;
     process.send({ fn: 'updateAssignments', assignments });
 };
 
 const reportError = (error) => {
+    if (ended) return;
     process.send({ fn: 'reportError', error: error.stack ? error.stack : error.toString() });
 };
 
@@ -51,7 +56,6 @@ let randomTimeoutId;
 let assignments = [];
 let consumeTimeout;
 let processed = 0;
-let ended = false;
 let processing = false;
 
 function simpleTopics(input) {
@@ -92,7 +96,7 @@ const consumer = new Kafka.KafkaConsumer({
                 manuallyAssign();
             } else if (err.code === Kafka.CODES.ERRORS.ERR__REVOKE_PARTITIONS) {
                 debug('REBALANCE_DISABLED: unassigned', simpleTopics(changed));
-                manuallyAssign();
+                // this.unassign();
             } else {
                 // We had a real error
                 reportError(err);
@@ -170,7 +174,7 @@ consumer.on('ready', () => {
     debug('ready!');
 
     debug(`Waiting for ${startTimeout}ms before starting...`);
-    consumer.subscribe([topicName]);
+    // consumer.subscribe([topicName]);
     manuallyAssign();
 
     setTimeout(() => {
@@ -185,7 +189,7 @@ function manuallyAssign() {
     if (enableRebalance) return;
 
     debug('MANUALLY ASSIGNING PARTITIONS: ', assignedPartitions);
-    const topics = _.map(assignedPartitions, partition => new Kafka.TopicPartition(topicName, partition));
+    const topics = _.map(assignedPartitions, partition => ({ topic: topicName, partition }));
     consumer.assign(topics);
 }
 
