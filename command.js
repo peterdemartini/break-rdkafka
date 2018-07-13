@@ -25,7 +25,7 @@ const {
     KAFKA_BROKERS = 'localhost:9092,localhost:9093',
     NUM_CONSUMERS = '4',
     NUM_PRODUCERS = '3',
-    NUM_PARTITIONS = '15',
+    NUM_PARTITIONS = '16',
     MESSAGES_PER_PARTITION = '30000',
     DEBUG = 'break-rdkafka*',
     ENABLE_REBALANCE = 'true',
