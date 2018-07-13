@@ -191,7 +191,7 @@ function _consumer({
                 _.forEach(_.values(offsets), ({ offset: _offset, topic, partition }) => {
                     const offset = _offset + 1;
                     assignments = _.map(assignments, (assigned) => {
-                        if (assigned === partition) {
+                        if (assigned.partition === partition) {
                             assigned.offsets += 1;
                         }
                         return assigned;
@@ -216,7 +216,7 @@ function _consumer({
                 consumedMessages(messages);
                 consume();
             });
-        }, 100);
+        }, 1000);
     }
 
 
