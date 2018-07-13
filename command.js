@@ -3,12 +3,20 @@
 const _ = require('lodash');
 const { kafka } = require('kafka-tools');
 const signale = require('signale');
-const { fork } = require('child_process');
 const stringifyObject = require('stringify-object');
-const debug = require('debug')('break-rdkafka:command');
+const debug = require('debug')('break-rdkafka');
 
 const exitHandler = require('./exit-handler');
 const genId = require('./generate-id');
+const { ensureTopic, deleteTopic } = require('./topic-helper');
+const {
+    createConsumer,
+    createProducer,
+    killAll,
+    hasChildren,
+    countChildren,
+    getAssignments
+} = require('./child-helper');
 
 const breakKafka = process.env.BREAK_KAFKA === 'true';
 
@@ -34,8 +42,8 @@ const messagesPerPartition = _.toSafeInteger(MESSAGES_PER_PARTITION);
 const startTimeout = _.toSafeInteger(START_TIMEOUT);
 const batchSize = _.toSafeInteger(BATCH_SIZE);
 
-function run() {
-    const topicName = genId('break-kafka');
+async function run() {
+    const topicName = 'break-kafka-topic';
 
     if (breakKafka) {
         debug('WARNING: CONFIGURED TO BREAK KAFKA');
@@ -63,417 +71,263 @@ function run() {
         retries: 0
     });
 
-    client.zk.createTopic(topicName, numPartitions, 1, {}, (createTopicErr) => {
-        if (createTopicErr) {
-            signale.fatal(createTopicErr);
+    await ensureTopic(client, topicName, numPartitions);
+
+    const produced = {};
+    const consumed = {};
+
+    _.times(numPartitions, (partition) => {
+        consumed[`${partition}`] = 0;
+        produced[`${partition}`] = 0;
+    });
+
+    let lastConsumedCount = -1;
+    let lastProducedCount = -1;
+    let consumeStuckCount = 0;
+    let produceStuckCount = 0;
+    let exiting = false;
+    const reportedErrors = [];
+
+    function getConsumedCount() {
+        return _.sum(_.values(consumed));
+    }
+
+    function getProducedCount() {
+        return _.sum(_.values(produced));
+    }
+
+    function isConsuming() {
+        const count = getConsumedCount();
+        return count > 0 && count < totalMessages;
+    }
+
+    function isProducing() {
+        const count = getProducedCount();
+        return count > 0 && count < totalMessages;
+    }
+
+    function isDoneConsuming() {
+        return getConsumedCount() >= totalMessages;
+    }
+
+    function isDoneProducing() {
+        return getProducedCount() >= totalMessages && _.isEmpty(messages);
+    }
+
+    function isExiting() {
+        return exiting;
+    }
+
+    function reportError(input) {
+        let message;
+        if (_.isString(input)) {
+            message = input;
+        } else {
+            message = input.stack ? input.stack : input.toString();
+        }
+        debug(message);
+        reportedErrors.push(message);
+    }
+
+    function getBatch() {
+        const remaining = _.size(messages);
+        const count = remaining > batchSize ? batchSize : remaining;
+        const randomStart = _.random(0, remaining);
+        return messages.splice(randomStart, count);
+    }
+
+    const updateInterval = setInterval(() => {
+        const consumedCount = getConsumedCount();
+        const producedCount = getProducedCount();
+        const childrenCount = countChildren();
+        const updates = [];
+
+        if (!isProducing()) {
+            updates.push('waiting for messages to be produced...');
+        } else if (isDoneProducing()) {
+            updates.push(`all ${producedCount} messages have been produced`);
+        } else {
+            const remaining = totalMessages - producedCount;
+            updates.push(`produced ${producedCount - lastProducedCount}, ${remaining} remaining...`);
+        }
+
+        if (!isConsuming()) {
+            updates.push('waiting for messages to be consumed...');
+        } else if (isDoneConsuming()) {
+            updates.push(`all ${consumedCount} messages have been consumed`);
+        } else {
+            const remaining = totalMessages - consumedCount;
+            updates.push(`consumed ${consumedCount - lastConsumedCount}, ${remaining} remaining...`);
+        }
+
+        updates.push(`active child processes ${childrenCount}`);
+
+        if (isConsuming() && consumedCount === lastConsumedCount) {
+            reportError(`WARNING: consumed count ${producedCount} stayed the same`);
+            consumeStuckCount += 1;
+        } else {
+            consumeStuckCount = 0;
+        }
+
+        if (isProducing() && producedCount === lastProducedCount) {
+            reportError(`WARNING: produced count ${producedCount} stayed the same`);
+            produceStuckCount += 1;
+        } else {
+            produceStuckCount = 0;
+        }
+
+        const errCount = _.size(reportedErrors);
+        if (!errCount) {
+            updates.push('no reported errors');
+        } else {
+            updates.push(...reportedErrors);
+        }
+
+        debug(`UPDATES:\n - ${updates.join('\n - ')}\n`);
+
+        if (consumeStuckCount === 3) {
+            exit(new Error(`Consume count (${consumedCount}) has stayed the same for 30 seconds`));
+        } else if (produceStuckCount === 3) {
+            exit(new Error(`Produce count (${producedCount}) has stayed the same for 30 seconds`));
+        } else {
+            lastConsumedCount = consumedCount;
+            lastProducedCount = producedCount;
+        }
+    }, 10 * 1000);
+
+    async function exit(err, signal, skipExit) {
+        if (exiting) {
+            if (err) {
+                reportError(err);
+            }
+            debug('already exiting...');
             return;
         }
 
-        const children = {};
-        const assignments = {};
-        const produced = {};
-        const consumed = {};
+        if (err) {
+            signale.error('Will exit because to error: ', err);
+        }
 
-        _.times(numPartitions, (partition) => {
-            consumed[`${partition}`] = 0;
-            produced[`${partition}`] = 0;
+        clearInterval(updateInterval);
+        debug('Exiting in 5 seconds...');
+
+        exiting = true;
+        await Promise.delay(5000);
+        debug('Exiting now...');
+        try {
+            await killAll(signal);
+        } catch (killAllErr) {
+            signale.error(killAllErr);
+        }
+
+        try {
+            await deleteTopic(topicName);
+        } catch (dErr) {
+            signale.error(dErr);
+        }
+
+        debug(`DELETED TOPIC: ${topicName}`);
+        debug('assignments', stringifyObject(getAssignments()));
+        debug('produced', stringifyObject(produced));
+        debug('consumed', stringifyObject(consumed));
+        debug('reportedErrors', stringifyObject(reportedErrors));
+
+        if (err) {
+            signale.fatal(err);
+            if (skipExit) return;
+            process.exit(1);
+        }
+
+        signale.success('DONE!');
+
+        if (skipExit) return;
+        process.exit(0);
+    }
+
+    async function exitIfNeeded() {
+        if (exiting) return;
+
+        if (isDoneConsuming() && isDoneProducing()) {
+            debug('is done consuming and producing, exiting...');
+            await exit();
+        }
+
+        if (hasChildren()) {
+            debug('No more children left, exiting...');
+            await exit();
+        }
+    }
+
+    const debugToManyMessages = _.debounce((count) => {
+        debug(`consumed more messages than it should have (${count})`);
+    }, 1000);
+
+    function consumedMessages(input) {
+        _.forEach(input, (message) => {
+            consumed[`${message.partition}`] += 1;
         });
-
-        let lastConsumedCount = -1;
-        let lastProducedCount = -1;
-        let consumeStuckCount = 0;
-        let produceStuckCount = 0;
-        let exitTimeout = null;
-        const reportedErrors = [];
-
-        function getConsumedCount() {
-            return _.sum(_.values(consumed));
+        const count = getConsumedCount();
+        if (count === totalMessages) {
+            signale.success(`consumed all of ${totalMessages} messages`);
+            debug('consumed result', consumed);
+            exit();
         }
-
-        function getProducedCount() {
-            return _.sum(_.values(produced));
+        if (count > totalMessages) {
+            debugToManyMessages(count);
         }
+    }
 
-        const updateInterval = setInterval(() => {
-            const consumedCount = getConsumedCount();
-            const producedCount = getProducedCount();
-            const childrenCount = _.size(_.values(children));
-            const updates = [];
-
-            if (producedCount <= 0) {
-                updates.push('waiting for messages to be produced...');
-            } else if (producedCount >= totalMessages) {
-                updates.push(`all ${producedCount} messages have been produced`);
-            } else {
-                const remaining = totalMessages - producedCount;
-                updates.push(`produced ${producedCount - lastProducedCount}, ${remaining} remaining...`);
-            }
-
-            if (consumedCount <= 0) {
-                updates.push('waiting for messages to be consumed...');
-            } else if (consumedCount >= totalMessages) {
-                updates.push(`all ${consumedCount} messages have been consumed`);
-            } else {
-                const remaining = totalMessages - consumedCount;
-                updates.push(`consumed ${consumedCount - lastConsumedCount}, ${remaining} remaining...`);
-            }
-
-            updates.push(`active child processes ${childrenCount}`);
-
-            if (consumedCount > 0 && consumedCount < totalMessages
-                && consumedCount && consumedCount === lastConsumedCount) {
-                reportedErrors.push(`WARNING: consumed count ${producedCount} stayed the same`);
-                consumeStuckCount += 1;
-            } else {
-                consumeStuckCount = 0;
-            }
-
-            if (producedCount > 0 && producedCount < totalMessages
-                && producedCount === lastProducedCount) {
-                reportedErrors.push(`WARNING: produced count ${producedCount} stayed the same`);
-                produceStuckCount += 1;
-            } else {
-                produceStuckCount = 0;
-            }
-
-            const errCount = _.size(reportedErrors);
-            if (!errCount) {
-                updates.push('no reported errors');
-            } else {
-                updates.push(...reportedErrors);
-            }
-
-
-            debug(`UPDATES:\n - ${updates.join('\n - ')}\n`);
-
-            if (consumeStuckCount === 3) {
-                exit(new Error(`Consume count (${consumedCount}) has stayed the same for 30 seconds`));
-            }
-
-            if (produceStuckCount === 3) {
-                exit(new Error(`Produce count (${producedCount}) has stayed the same for 30 seconds`));
-            }
-
-            lastConsumedCount = consumedCount;
-            lastProducedCount = producedCount;
-        }, 10 * 1000);
-
-        function exit(err, signal, done) {
-            if (exitTimeout != null) {
-                if (err) {
-                    reportedErrors.push(err.stack ? err.stack : err.toString());
-                }
-                debug('already exiting...');
-                return;
-            }
-
-            if (err) {
-                signale.error('Will exit because to error: ', err);
-            }
-
-            clearInterval(updateInterval);
-            debug('Exiting in 5 seconds...');
-
-            exitTimeout = setTimeout(() => {
-                debug('Exiting now...');
-                killAll(signal, (killAllErr) => {
-                    if (killAllErr) signale.error(killAllErr);
-
-                    client.zk.deleteTopics([topicName], (dErr) => {
-                        if (dErr) {
-                            signale.error(dErr);
-                        }
-                        debug(`DELETED TOPIC: ${topicName}`);
-                        debug('assignments', stringifyObject(assignments));
-                        debug('produced', stringifyObject(produced));
-                        debug('consumed', stringifyObject(consumed));
-                        debug('reportedErrors', stringifyObject(reportedErrors));
-
-                        if (err) {
-                            signale.fatal(err);
-                            if (_.isFunction(done)) {
-                                done(err);
-                                return;
-                            }
-                            process.exit(1);
-                        }
-
-                        signale.success('DONE!');
-                        if (_.isFunction(done)) {
-                            done();
-                            return;
-                        }
-                        process.exit(0);
-                    });
-                });
-            }, 5000);
+    function producedMessages(input) {
+        _.forEach(input, (message) => {
+            produced[`${message.partition}`] += 1;
+        });
+        const count = getProducedCount();
+        if (count === totalMessages) {
+            signale.success(`produced all of ${totalMessages} messages`);
+            debug('produced result', produced);
         }
-
-        function killAll(signal = 'SIGTERM', callback) {
-            if (_.isEmpty(children)) {
-                callback();
-                return;
-            }
-            let waitUntilTimeout;
-            let shutdownTimeout;
-            signale.warn(`${signal} all remaining children`);
-
-            _.forEach(_.values(children), (child) => {
-                child.kill(signal);
-            });
-
-            function waitUntilDead() {
-                debug(`waiting until child processes are dead... ${_.size(_.values(children))}`);
-                waitUntilTimeout = setTimeout(() => {
-                    if (_.isEmpty(children)) {
-                        clearTimeout(shutdownTimeout);
-                        callback();
-                        return;
-                    }
-                    waitUntilDead();
-                }, 1000);
-            }
-            waitUntilDead();
-
-            shutdownTimeout = setTimeout(() => {
-                clearTimeout(waitUntilTimeout);
-                callback(new Error('Failed to shutdown children in 10 seconds'));
-            }, 10 * 1000);
+        if (count > totalMessages) {
+            reportError(`produced more messages than it should have (${count})`);
         }
+    }
 
-        function exitIfNeeded() {
-            if (getProducedCount() > totalMessages) {
-                exit();
-            }
-            if (_.isEmpty(children)) {
-                exit();
-            }
-        }
 
-        const debugToManyMessages = _.debounce((count) => {
-            debug(`consumed more messages than it should have (${count})`);
-        }, 1000);
-
-        function consumedMessages(input) {
-            _.forEach(input, (message) => {
-                consumed[`${message.partition}`] += 1;
-            });
-            const count = getConsumedCount();
-            if (count === totalMessages) {
-                signale.success(`consumed all of ${totalMessages} messages`);
-                debug('consumed result', consumed);
-                exit();
-            }
-            if (count > totalMessages) {
-                debugToManyMessages(count);
-            }
-        }
-
-        function producedMessages(input) {
-            _.forEach(input, (message) => {
-                produced[`${message.partition}`] += 1;
-            });
-            const count = getProducedCount();
-            if (count === totalMessages) {
-                signale.success(`produced all of ${totalMessages} messages`);
-                debug('produced result', produced);
-            }
-            if (count > totalMessages) {
-                debug(`produced more messages than it should have (${count})`);
-            }
-        }
-
-        function createProducer(i) {
-            let recreating = false;
-            const key = `produce-${i}`;
-            let heartbeatTimeout;
-            signale.time(key);
-
-            const child = fork(`${__dirname}/produce-worker.js`, [], {
-                env: {
-                    BREAK_KAFKA_KEY: key,
-                    BREAK_KAFKA_TOPIC_NAME: topicName,
-                    BREAK_KAFKA_BROKERS: kafkaBrokers,
-                    BATCH_SIZE: batchSize,
-                    FORCE_COLOR: '1',
-                    DEBUG,
-                },
-                stdio: 'inherit'
-            });
-
-            child.on('close', (code) => {
-                delete children[key];
-                if (recreating) {
-                    clearTimeout(heartbeatTimeout);
-                }
-
-                if (exitTimeout == null && !_.isEmpty(messages)) {
-                    const message = `WARNING: child ${key} exited with status code ${code}`;
-                    debug(message);
-                    reportedErrors.push(message);
-                }
-
-                if (code !== 0) {
-                    exit(new Error(`${key} died with an exit code of ${code}`));
-                    return;
-                }
-
-                exitIfNeeded();
-                signale.timeEnd(key);
-                signale.success(`${key} done!`);
-            });
-
-            child.on('error', (err) => {
-                signale.error(err);
-            });
-
-            child.on('message', (data) => {
-                if (data.fn === 'producedMessages') {
-                    producedMessages(data.msg);
-                }
-
-                if (data.fn === 'getMessageBatch') {
-                    const remaining = _.size(messages);
-                    if (!remaining) {
-                        debug(`no more messages to use, sending SIGTERM to ${key}`);
-                        child.kill('SIGTERM');
-                        return;
-                    }
-                    const count = remaining > batchSize ? batchSize : remaining;
-                    const randomStart = _.random(0, remaining);
-                    const batch = messages.splice(randomStart, count);
-                    const responseId = data.requestId;
-                    child.send({ fn: 'receiveMessageBatch', messages: batch, responseId });
-                }
-
-                if (data.fn === 'heartbeat') {
-                    clearTimeout(heartbeatTimeout);
-                    heartbeatTimeout = setTimeout(() => {
-                        if (exitTimeout == null) {
-                            const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
-                            debug(message);
-                            reportedErrors.push(message);
-                        }
-                        child.kill('SIGKILL');
-                        debug(`will recreating producer ${key} in ${data.validFor}ms...`);
-                        recreating = true;
-                        heartbeatTimeout = setTimeout(() => {
-                            reportedErrors.push(`INFO: recreating producer ${key}...`);
-                            createProducer(i);
-                        }, data.validFor);
-                    }, data.validFor);
-                }
-
-                if (data.fn === 'reportError') {
-                    if (exitTimeout == null) {
-                        const message = `ERROR: ${key} reported error ${data.error}`;
-                        debug(message);
-                        reportedErrors.push(message);
-                    }
-                }
-            });
-
-            children[key] = child;
-        }
-
-        function createConsumer(i) {
-            let recreating = false;
-            const key = `consume-${i + 1}`;
-            let heartbeatTimeout;
-            signale.time(key);
-
-            const child = fork(`${__dirname}/consume-worker.js`, [], {
-                env: {
-                    BREAK_KAFKA_KEY: key,
-                    BREAK_KAFKA_TOPIC_NAME: topicName,
-                    BREAK_KAFKA_BROKERS: kafkaBrokers,
-                    BATCH_SIZE: batchSize,
-                    FORCE_COLOR: '1',
-                    START_TIMEOUT: i * startTimeout,
-                    DEBUG,
-                    ENABLE_PAUSE_AND_RESUME,
-                    USE_COMMIT_SYNC
-                },
-                stdio: 'inherit'
-            });
-
-            child.on('close', (code) => {
-                delete children[key];
-                if (!recreating) {
-                    clearTimeout(heartbeatTimeout);
-                }
-
-                if (exitTimeout == null) {
-                    const message = `WARNING: child ${key} exited with status code ${code}`;
-                    debug(message);
-                    reportedErrors.push(message);
-                }
-
-                if (code > 0) {
-                    exit(new Error(`${key} died with an exit code of ${code}`));
-                    return;
-                }
-
-                exitIfNeeded();
-                signale.timeEnd(key);
-                signale.success(`${key} done!`);
-            });
-
-            child.on('error', (err) => {
-                signale.error(err);
-            });
-
-            child.on('message', (data) => {
-                if (data.fn === 'consumedMessages') {
-                    consumedMessages(data.msg);
-                }
-                if (data.fn === 'updateAssignments') {
-                    assignments[key] = data.assignments;
-                }
-                if (data.fn === 'heartbeat') {
-                    clearTimeout(heartbeatTimeout);
-                    heartbeatTimeout = setTimeout(() => {
-                        if (exitTimeout == null) {
-                            const message = `WARNING: ${key} hasn't responded to heartbeats in ${data.validFor}ms sending SIGKILL`;
-                            debug(message);
-                            reportedErrors.push(message);
-                        }
-                        child.kill('SIGKILL');
-                        debug(`will recreating consumer ${key} in ${data.validFor}ms...`);
-                        recreating = true;
-                        heartbeatTimeout = setTimeout(() => {
-                            reportedErrors.push(`INFO: recreating consumer ${key}...`);
-                            createConsumer(i);
-                        }, data.validFor);
-                    }, data.validFor);
-                }
-
-                if (data.fn === 'reportError') {
-                    if (exitTimeout == null) {
-                        const message = `ERROR: ${key} reported error ${data.error}`;
-                        debug(message);
-                        reportedErrors.push(message);
-                    }
-                }
-            });
-
-            children[key] = child;
-        }
-
-        _.times(numProducers, createProducer);
-
-        _.times(numConsumers, createConsumer);
-
-        exitHandler(signal => new Promise((resolve, reject) => {
-            exit(null, signal, (err) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve();
-                }
-            });
-        }));
+    _.times(numProducers, () => {
+        const config = {
+            topicName,
+            kafkaBrokers,
+            batchSize,
+            DEBUG,
+            isDoneProducing,
+            isExiting,
+            reportError,
+            exitIfNeeded,
+            producedMessages,
+            getBatch,
+        };
+        createProducer(config);
     });
+
+    _.times(numConsumers, () => {
+        const config = {
+            topicName,
+            kafkaBrokers,
+            batchSize,
+            numConsumers,
+            startTimeout,
+            DEBUG,
+            ENABLE_PAUSE_AND_RESUME,
+            USE_COMMIT_SYNC,
+            isDoneConsuming,
+            isExiting,
+            reportError,
+            exitIfNeeded,
+            consumedMessages,
+        };
+        createConsumer(config);
+    });
+
+    exitHandler(signal => exit(null, signal, true));
 
     function makeMessages() {
         signale.time('making messages');

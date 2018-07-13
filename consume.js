@@ -1,12 +1,12 @@
 'use strict';
 
+const consumerId = process.env.CONSUMER_ID;
 const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
 const Kafka = require('node-rdkafka');
-const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
+const debug = require('debug')(`break-rdkafka:${consumerId}`);
 const exitHandler = require('./exit-handler');
-const genId = require('./generate-id');
 
 // const breakKafka = process.env.BREAK_KAFKA === 'true';
 const useCommitSync = process.env.USE_COMMIT_SYNC === 'true';
@@ -17,7 +17,7 @@ const useConsumerPauseAndResume = process.env.USE_CONSUMER_PAUSE_AND_RESUME === 
 const startTimeout = parseInt(process.env.START_TIMEOUT, 10);
 const batchSize = parseInt(process.env.BATCH_SIZE, 10);
 
-const statsFile = path.join(__dirname, 'stats', `${process.env.BREAK_KAFKA_KEY}.json`);
+const statsFile = path.join(__dirname, 'stats', `${consumerId}.json`);
 try {
     fs.unlinkSync(statsFile);
 } catch (err) {
@@ -59,7 +59,7 @@ function _consumer({
     }, 500);
 
     const consumer = new Kafka.KafkaConsumer({
-        'client.id': genId('break-kafka-'),
+        'client.id': consumerId,
         debug: 'consumer,cgrp,topic,fetch',
         // 'session.timeout.ms': breakKafka ? 10000 : 1000,
         'fetch.wait.max.ms': 1000,

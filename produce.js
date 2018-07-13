@@ -1,12 +1,13 @@
 'use strict';
 
+const producerId = process.env.PRODUCER_ID;
+
 const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
 const Kafka = require('node-rdkafka');
-const debug = require('debug')(`break-rdkafka:${process.env.BREAK_KAFKA_KEY}`);
+const debug = require('debug')(`break-rdkafka:${producerId}`);
 const exitHandler = require('./exit-handler');
-const genId = require('./generate-id');
 
 const messageObject = fs.readFileSync('message.json');
 
@@ -14,7 +15,7 @@ const topicName = process.env.BREAK_KAFKA_TOPIC_NAME;
 const kafkaBrokers = process.env.BREAK_KAFKA_BROKERS;
 const batchSize = parseInt(process.env.BATCH_SIZE, 10);
 
-const statsFile = path.join(__dirname, 'stats', `${process.env.BREAK_KAFKA_KEY}.json`);
+const statsFile = path.join(__dirname, 'stats', `${producerId}.json`);
 try {
     fs.unlinkSync(statsFile);
 } catch (err) {
@@ -28,7 +29,7 @@ function produce({ producedMessages, startBatch, reportError }, callback) {
     let processing = false;
 
     const producer = new Kafka.Producer({
-        'client.id': genId('break-kafka-'),
+        'client.id': producerId,
         debug: 'broker,topic,msg',
         'queue.buffering.max.messages': batchSize * 5,
         'queue.buffering.max.ms': 10 * 1000,
