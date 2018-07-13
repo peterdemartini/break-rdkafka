@@ -18,10 +18,10 @@ module.exports = (fn, timeout = 20 * 1000) => {
             Promise.delay(timeout)
         ]).then(() => {
             console.log(`Exiting... took ${Date.now() - startTime}ms`);
-            process.exit(0);
+            process.exit(process.exitCode || 0);
         }).catch((error) => {
             console.error(error.stack ? error.stack : error.toString());
-            process.exit(1);
+            process.exit(process.exitCode || 1);
         });
     };
 

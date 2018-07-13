@@ -59,6 +59,7 @@ async function run() {
         numProducers,
         batchSize,
         startTimeout,
+        ENABLE_REBALANCE,
         ENABLE_PAUSE_AND_RESUME,
         USE_COMMIT_SYNC,
         USE_CONSUMER_PAUSE_AND_RESUME,

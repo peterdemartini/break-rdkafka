@@ -174,8 +174,11 @@ consumer.on('ready', () => {
     debug('ready!');
 
     debug(`Waiting for ${startTimeout}ms before starting...`);
-    // consumer.subscribe([topicName]);
-    manuallyAssign();
+    if (enableRebalance) {
+        consumer.subscribe([topicName]);
+    } else {
+        manuallyAssign();
+    }
 
     setTimeout(() => {
         debug('Starting...');
